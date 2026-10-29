@@ -1,0 +1,8 @@
+CompileFlags:
+  CompilationDatabase: build
+  Add:
+    - -Iinclude
+    - -I.
+    - -I/usr/include/libcamera
+    - -I/usr/include/SDL2
+    - -D_REENTRANT

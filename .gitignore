@@ -1,0 +1,63 @@
+# Compiled Object & Dependency files
+*.o
+*.obj
+*.lo
+*.slo
+*.d
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic & Static libraries
+*.so
+*.so.*
+*.dylib
+*.dll
+*.a
+*.lib
+*.lai
+*.la
+
+# Executables
+/rubuscam
+*.exe
+*.out
+*.app
+
+# CMake build directories & artifacts
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Clangd / Language Server cache
+.cache/
+
+# Captured media / runtime output
+DCIM/
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.dng
+*.DNG
+
+# Editor / IDE directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+fonts/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
