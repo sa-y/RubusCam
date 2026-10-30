@@ -115,7 +115,7 @@ typedef struct {
   int delete_dialog_selection; /* 0=Delete Single, 1=Delete All Unprotected, 2=Cancel */
 
   /* Toast notification banner (rendered in both Live and Playback modes) */
-  char toast_message[160];
+  char toast_message[320];
   uint32_t toast_expire_ms;
 
   /* Ring buffer of recent capture exposure metadata */
