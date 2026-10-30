@@ -82,11 +82,21 @@ bool camera_stream_get_latest_frame(CameraStream *cam, uint8_t *out_buffer,
 bool camera_stream_trigger_af(CameraStream *cam);
 
 /*
- * Capture a high-resolution still JPEG image to disk (equivalent to 'Space'
- * key). Uses the dedicated still stream (dual-stream or mode-switch fallback).
+ * Callback function type for encoding and saving a captured still image buffer.
  * Returns true on success, false on failure.
  */
-bool camera_stream_capture_still(CameraStream *cam, const char *filename);
+typedef bool (*CameraStillSaveCallback)(const char *filename,
+                                        const uint8_t *data, int width,
+                                        int height, int stride, bool is_bgr);
+
+/*
+ * Capture a high-resolution still image (equivalent to 'Space' key).
+ * Uses the dedicated still stream (dual-stream or mode-switch fallback) and
+ * invokes save_cb to encode and write the image to filename.
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_capture_still(CameraStream *cam, const char *filename,
+                                 CameraStillSaveCallback save_cb);
 
 #ifdef __cplusplus
 }

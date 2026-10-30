@@ -1,6 +1,6 @@
 # RubusCam 
 
-Raspberry Pi 上で **SDL2**、**SDL2_ttf**、および **libcamera** を利用し、カメラ映像のリアルタイムプレビュー表示と静止画撮影を行うカメラビューアツールです。  
+Raspberry Pi 上で **SDL2**、**SDL2_image**、**SDL2_ttf**、および **libcamera** を利用し、カメラ映像のリアルタイムプレビュー表示と静止画撮影を行うカメラビューアツールです。  
 `libcamera` は公式に C++ API のみを提供しているため、C言語から安全かつシンプルに呼び出せるよう、`extern "C"` で囲んだ軽量な C++ ラッパー層を用意して連携しています。
 
 ---
@@ -40,7 +40,7 @@ Raspberry Pi 上で以下のコマンドを実行し、必要な開発用ライ�
 
 ```bash
 sudo apt update
-sudo apt install -y libcamera-dev libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core build-essential cmake pkg-config
+sudo apt install -y libcamera-dev libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev fonts-dejavu-core build-essential cmake pkg-config
 ```
 
 ---
@@ -140,7 +140,9 @@ int camera_stream_get_still_height(const CameraStream *cam);
 
 bool camera_stream_get_latest_frame(CameraStream *cam, uint8_t *out_buffer, size_t buffer_size, uint64_t *out_sequence);
 bool camera_stream_trigger_af(CameraStream *cam);
-bool camera_stream_capture_still(CameraStream *cam, const char *filename);
+
+typedef bool (*CameraStillSaveCallback)(const char *filename, const uint8_t *data, int width, int height, int stride, bool is_bgr);
+bool camera_stream_capture_still(CameraStream *cam, const char *filename, CameraStillSaveCallback save_cb);
 ```
 
 ---

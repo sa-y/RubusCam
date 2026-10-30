@@ -18,8 +18,9 @@ find_package(PkgConfig REQUIRED)
 # Check for libcamera
 pkg_check_modules(LIBCAMERA REQUIRED IMPORTED_TARGET libcamera)
 
-# Check for SDL2 & SDL2_ttf
+# Check for SDL2, SDL2_image & SDL2_ttf
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+pkg_check_modules(SDL2_IMAGE REQUIRED IMPORTED_TARGET SDL2_image)
 pkg_check_modules(SDL2_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
 
 # Check for pthreads
@@ -46,6 +47,7 @@ target_include_directories(rubuscam PRIVATE
 target_link_libraries(rubuscam PRIVATE
     PkgConfig::LIBCAMERA
     PkgConfig::SDL2
+    PkgConfig::SDL2_IMAGE
     PkgConfig::SDL2_TTF
     Threads::Threads
 )

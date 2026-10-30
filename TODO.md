@@ -28,7 +28,7 @@
 - [x] **リアルタイムプレビュー**: SDL2 GPU レンダリングを用いた ~30 FPS プレビュー表示 & アスペクト比維持スケーリング
 - [x] **libcamera C++ ラッパー**: C11 から `extern "C"` 経由で libcamera を呼び出し
 - [x] **基本オートフォーカス**: 常時追従AF (Continuous AF) & ワンショットAF再調整 (Fキー)
-- [x] **ワンキー撮影**: Spaceキーによる高解像度JPEG保存 (`stb_image_write`, マルチストリーム / モード切替対応)
+- [x] **ワンキー撮影**: Spaceキーによる高解像度JPEG保存 (`SDL2_image` / `IMG_SaveJPG`, マルチストリーム / モード切替対応)
 - [x] **DCF 準拠ファイル管理**: `DCIM/100_PICA/IMG_0001.JPG` (または日付別 `DCIM/YYYYMMDD/`) の自動採番・残容量チェック
 - [x] **モダンOSD**: `SDL2_ttf` によるアンチエイリアス TrueType フォント & GPU 半透明ガイドオーバーレイ
 - [x] **シグナルハンドリング**: `Ctrl + C` による安全なリソース解放

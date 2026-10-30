@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
 
 #include "camera_stream.h"
@@ -49,6 +50,34 @@ static void calculate_viewport_rect(int src_w, int src_h, int win_w, int win_h,
   }
 }
 
+static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
+                            int width, int height, int stride, bool is_bgr) {
+  if (!filename || !src_data || width <= 0 || height <= 0) {
+    return false;
+  }
+
+  int effective_stride = stride > 0 ? stride : (width * 3);
+  Uint32 format = is_bgr ? SDL_PIXELFORMAT_BGR24 : SDL_PIXELFORMAT_RGB24;
+
+  SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
+      (void *)src_data, width, height, 24, effective_stride, format);
+  if (!surface) {
+    fprintf(stderr, "[エラー] JPEG保存用サーフェスの作成に失敗しました: %s\n",
+            SDL_GetError());
+    return false;
+  }
+
+  const int jpeg_quality = 95;
+  int ret = IMG_SaveJPG(surface, filename, jpeg_quality);
+  if (ret != 0) {
+    fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
+            IMG_GetError());
+  }
+
+  SDL_FreeSurface(surface);
+  return ret == 0;
+}
+
 int main(int argc, char *argv[]) {
   DcfDirMode dcf_mode = DCF_DIR_MODE_STANDARD;
   for (int i = 1; i < argc; ++i) {
@@ -73,16 +102,24 @@ int main(int argc, char *argv[]) {
                                              : "DCIM/YYYYMMDD");
   }
 
-  // 1. Initialize SDL2 & SDL2_ttf
+  // 1. Initialize SDL2, SDL2_image & SDL2_ttf
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
     fprintf(stderr, "[エラー] SDL2 の初期化に失敗しました: %s\n",
             SDL_GetError());
     return 1;
   }
 
+  if ((IMG_Init(IMG_INIT_JPG) & IMG_INIT_JPG) != IMG_INIT_JPG) {
+    fprintf(stderr, "[エラー] SDL2_image (JPG) の初期化に失敗しました: %s\n",
+            IMG_GetError());
+    SDL_Quit();
+    return 1;
+  }
+
   if (TTF_Init() < 0) {
     fprintf(stderr, "[エラー] SDL2_ttf の初期化に失敗しました: %s\n",
             TTF_GetError());
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -99,6 +136,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "[エラー] ウィンドウの作成に失敗しました: %s\n",
             SDL_GetError());
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -120,6 +158,7 @@ int main(int argc, char *argv[]) {
             SDL_GetError());
     SDL_DestroyWindow(window);
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -130,7 +169,7 @@ int main(int argc, char *argv[]) {
   // Hide mouse cursor (convenient for console environments)
   SDL_ShowCursor(SDL_DISABLE);
 
-  printf("[-] SDL2 / SDL2_ttf を初期化しました。\n");
+  printf("[-] SDL2 / SDL2_image / SDL2_ttf を初期化しました。\n");
 
   // 2. Initialize CameraStream (libcamera via C wrapper)
   CameraStream *camera = camera_stream_create();
@@ -141,6 +180,7 @@ int main(int argc, char *argv[]) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -152,6 +192,7 @@ int main(int argc, char *argv[]) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -163,6 +204,7 @@ int main(int argc, char *argv[]) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -185,6 +227,7 @@ int main(int argc, char *argv[]) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -210,6 +253,7 @@ int main(int argc, char *argv[]) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     TTF_Quit();
+    IMG_Quit();
     SDL_Quit();
     return 1;
   }
@@ -245,7 +289,7 @@ int main(int argc, char *argv[]) {
           char filepath[512];
           if (dcf_storage_next_filepath(&dcf_storage, filepath,
                                         sizeof(filepath))) {
-            camera_stream_capture_still(camera, filepath);
+            camera_stream_capture_still(camera, filepath, save_still_jpeg);
           }
           break;
         }
@@ -313,6 +357,7 @@ int main(int argc, char *argv[]) {
   }
 
   TTF_Quit();
+  IMG_Quit();
   SDL_Quit();
   printf("[-] アプリケーションを安全に終了しました。\n");
 

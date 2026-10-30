@@ -5,8 +5,8 @@ CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra
 DEPFLAGS = -MMD -MP
 INCLUDES = -Iinclude
 
-PKG_CFLAGS = $(shell pkg-config --cflags libcamera sdl2 SDL2_ttf)
-PKG_LIBS   = $(shell pkg-config --libs libcamera sdl2 SDL2_ttf) -lpthread
+PKG_CFLAGS = $(shell pkg-config --cflags libcamera sdl2 SDL2_image SDL2_ttf)
+PKG_LIBS   = $(shell pkg-config --libs libcamera sdl2 SDL2_image SDL2_ttf) -lpthread
 
 BUILD_DIR ?= build
 

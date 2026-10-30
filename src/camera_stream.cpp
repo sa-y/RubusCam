@@ -1,8 +1,5 @@
 #include "camera_stream.h"
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -28,35 +25,6 @@ struct MappedPlane {
   void *address = nullptr;
   size_t length = 0;
 };
-
-bool encodeRgbBufferToJpeg(const char *filename, const uint8_t *srcData,
-                           int width, int height, int stride, bool isBGR,
-                           int quality = 95) {
-  if (!filename || !srcData || width <= 0 || height <= 0) {
-    return false;
-  }
-
-  int effectiveStride = stride > 0 ? stride : (width * 3);
-  std::vector<uint8_t> rgbData(static_cast<size_t>(width) * height * 3);
-
-  for (int y = 0; y < height; ++y) {
-    const uint8_t *srcRow = srcData + static_cast<size_t>(y) * effectiveStride;
-    uint8_t *dstRow = rgbData.data() + static_cast<size_t>(y) * width * 3;
-
-    if (isBGR) {
-      for (int x = 0; x < width; ++x) {
-        dstRow[x * 3 + 0] = srcRow[x * 3 + 2];
-        dstRow[x * 3 + 1] = srcRow[x * 3 + 1];
-        dstRow[x * 3 + 2] = srcRow[x * 3 + 0];
-      }
-    } else {
-      std::memcpy(dstRow, srcRow, static_cast<size_t>(width) * 3);
-    }
-  }
-
-  int ret = stbi_write_jpg(filename, width, height, 3, rgbData.data(), quality);
-  return ret != 0;
-}
 } // namespace
 
 // C++ internal representation for CameraStream
@@ -860,8 +828,9 @@ bool camera_stream_trigger_af(CameraStream *cam) {
   return focused;
 }
 
-bool camera_stream_capture_still(CameraStream *cam, const char *filename) {
-  if (!cam || !filename)
+bool camera_stream_capture_still(CameraStream *cam, const char *filename,
+                                 CameraStillSaveCallback save_cb) {
+  if (!cam || !filename || !save_cb)
     return false;
 
   std::cout << "[-] 高解像度静止画を撮影中 (" << cam->m_stillWidth << "x"
@@ -923,9 +892,8 @@ bool camera_stream_capture_still(CameraStream *cam, const char *filename) {
     return false;
   }
 
-  if (!encodeRgbBufferToJpeg(filename, stillCopy.data(), width, height, stride,
-                             isBGR, 95)) {
-    std::cerr << "[エラー] JPEGファイルの保存に失敗しました: " << filename
+  if (!save_cb(filename, stillCopy.data(), width, height, stride, isBGR)) {
+    std::cerr << "[エラー] 画像ファイルの保存に失敗しました: " << filename
               << std::endl;
     return false;
   }
