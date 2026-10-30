@@ -6,6 +6,7 @@
 
 #include <SDL2/SDL.h>
 
+#include "async_save_queue.h"
 #include "camera_stream.h"
 #include "dcf_storage.h"
 
@@ -60,6 +61,7 @@ typedef struct {
   float ev_bias;
   float f_number;
   float focal_length_mm;
+  uint16_t wb_mode;
 } PhotoMetadata;
 
 /*
@@ -80,6 +82,7 @@ typedef struct {
   AppMode mode;
   PlayViewMode view_mode;
   DcfStorage *dcf;
+  AsyncSaveQueue *save_queue;
 
   /* Quick Review state */
   uint32_t quick_review_start_ms;
@@ -127,6 +130,14 @@ typedef struct {
  * Initialize the playback manager and associate it with DCF storage.
  */
 void playback_manager_init(PlaybackManager *pm, DcfStorage *dcf);
+
+/*
+ * Associate an asynchronous background save queue with the playback manager
+ * so Quick Review discard/protect and Playback gallery entry synchronize with
+ * in-flight background writes.
+ */
+void playback_manager_set_save_queue(PlaybackManager *pm,
+                                     AsyncSaveQueue *save_queue);
 
 /*
  * Release all textures and media list memory owned by the playback manager.

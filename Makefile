@@ -6,14 +6,16 @@ DEPFLAGS = -MMD -MP
 INCLUDES = -Iinclude
 
 PKG_CFLAGS = $(shell pkg-config --cflags libcamera sdl2 SDL2_image SDL2_ttf)
-PKG_LIBS   = $(shell pkg-config --libs libcamera sdl2 SDL2_image SDL2_ttf) -lpthread
+PKG_LIBS   = $(shell pkg-config --libs libcamera sdl2 SDL2_image SDL2_ttf) -lpthread -lm
 
 BUILD_DIR ?= build
 
 C_SRCS = src/main.c \
          src/text_renderer.c \
          src/dcf_storage.c \
-         src/playback_manager.c
+         src/playback_manager.c \
+         src/exif_writer.c \
+         src/async_save_queue.c
 
 CXX_SRCS = src/camera_stream.cpp
 

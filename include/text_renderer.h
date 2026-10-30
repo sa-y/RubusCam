@@ -33,12 +33,15 @@ void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported);
 
 /*
  * Draw the exposure status HUD bar at the bottom-left of the screen.
- * Displays current shutter speed, ISO sensitivity, and EV compensation.
+ * Displays current shutter speed, ISO sensitivity, EV compensation, JPEG
+ * quality preset label, and background save queue indicator.
  * Uses texture caching to avoid re-rasterizing unchanged text strings.
  */
 void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
                                      int win_h,
-                                     const CameraExposureStatus *status);
+                                     const CameraExposureStatus *status,
+                                     const char *quality_label,
+                                     int pending_saves);
 
 /*
  * Measure the pixel width and height of a UTF-8 string using the loaded font.

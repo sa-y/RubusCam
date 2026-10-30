@@ -10,8 +10,10 @@
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
 
+#include "async_save_queue.h"
 #include "camera_stream.h"
 #include "dcf_storage.h"
+#include "exif_writer.h"
 #include "playback_manager.h"
 #include "text_renderer.h"
 
@@ -19,6 +21,7 @@ static volatile sig_atomic_t g_running = 1;
 static PlaybackManager *g_active_playback = NULL;
 static SDL_Renderer *g_active_renderer = NULL;
 static CameraStream *g_active_camera = NULL;
+static int g_active_jpeg_quality = 90;
 
 static const int ISO_PRESETS[] = {0, 100, 200, 400, 800, 1600, 3200};
 static const int ISO_PRESET_COUNT =
@@ -38,6 +41,20 @@ static const ShutterPreset SHUTTER_PRESETS[] = {
 };
 static const int SHUTTER_PRESET_COUNT =
     (int)(sizeof(SHUTTER_PRESETS) / sizeof(SHUTTER_PRESETS[0]));
+
+typedef struct JpegQualityPreset {
+  int quality;
+  const char *name;
+  const char *hud_label;
+} JpegQualityPreset;
+
+static const JpegQualityPreset JPEG_QUALITY_PRESETS[] = {
+    {98, "SuperFine (98%)", "SFine (98%)"},
+    {90, "Fine (90%)", "Fine (90%)"},
+    {80, "Normal (80%)", "Norm (80%)"},
+};
+static const int JPEG_QUALITY_PRESET_COUNT =
+    (int)(sizeof(JPEG_QUALITY_PRESETS) / sizeof(JPEG_QUALITY_PRESETS[0]));
 
 static void signal_handler(int signum) {
   (void)signum;
@@ -90,20 +107,30 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
     return false;
   }
 
-  const int jpeg_quality = 95;
+  const int jpeg_quality = g_active_jpeg_quality > 0 ? g_active_jpeg_quality : 90;
   int ret = IMG_SaveJPG(surface, filename, jpeg_quality);
   if (ret != 0) {
     fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
             IMG_GetError());
-  } else if (g_active_playback && g_active_renderer) {
+  } else {
     CameraExposureStatus exp_status;
     memset(&exp_status, 0, sizeof(exp_status));
     if (g_active_camera) {
       camera_stream_get_exposure_status(g_active_camera, &exp_status);
     }
-    playback_manager_start_quick_review(g_active_playback, g_active_renderer,
-                                        filename, src_data, width, height,
-                                        stride, is_bgr, &exp_status);
+    ExifMetadata exif;
+    exif_metadata_init(&exif,
+                       g_active_camera
+                           ? camera_stream_get_model_name(g_active_camera)
+                           : NULL,
+                       width, height, &exp_status);
+    exif_inject_into_jpeg_file(filename, &exif);
+
+    if (g_active_playback && g_active_renderer) {
+      playback_manager_start_quick_review(g_active_playback, g_active_renderer,
+                                          filename, src_data, width, height,
+                                          stride, is_bgr, &exp_status);
+    }
   }
 
   SDL_FreeSurface(surface);
@@ -242,7 +269,7 @@ int main(int argc, char *argv[]) {
   }
 
   printf("=========================================\n");
-  printf(" [Space]        : 写真を撮影して保存 (直後にクイックレビュー表示)\n");
+  printf(" [Space]        : 写真を撮影して非同期保存 (直後にクイックレビュー表示)\n");
   printf(" [P]            : 再生・ギャラリーモード切替 (ズーム/グリッド/削除/保護)\n");
   if (camera_stream_is_af_supported(camera)) {
     printf(" [F]            : オートフォーカス再調整 (ワンショットAF)\n");
@@ -250,7 +277,8 @@ int main(int argc, char *argv[]) {
   printf(" [Up/Down, [/]] : 露出補正 (EV -3.0 ~ +3.0, 1/3ステップ)\n");
   printf(" [I / Shift+I]  : ISO感度切替 (Auto / 100 ~ 3200)\n");
   printf(" [S / Left/Rgt] : シャッター速度切替 (Auto / 1/2000s ~ 2.0s)\n");
-  printf(" [R]            : 露出設定をすべてAuto/0.0EVにリセット\n");
+  printf(" [J / Shift+J]  : JPEG保存画質切替 (SuperFine 98%% / Fine 90%% / Normal 80%%)\n");
+  printf(" [R]            : 露出・画質設定をデフォルトにリセット\n");
   printf(" [Q]            : アプリを終了\n");
   printf("=========================================\n");
 
@@ -297,14 +325,24 @@ int main(int argc, char *argv[]) {
 
   const uint32_t target_frame_time_ms = 1000 / 30; // ~30 FPS
 
-  // Exposure control state indices
+  // Exposure & JPEG quality control state indices
   int ev_step_index = 0; // -9 (-3.0 EV) to +9 (+3.0 EV) in 1/3 EV increments
   int iso_preset_index = 0;
   int shutter_preset_index = 0;
+  int quality_preset_index = 1; // Default: Fine (90%)
+  g_active_jpeg_quality = JPEG_QUALITY_PRESETS[quality_preset_index].quality;
+
+  // Initialize background async JPEG + Exif save queue
+  AsyncSaveQueue save_queue;
+  if (!async_save_queue_init(&save_queue)) {
+    fprintf(stderr,
+            "[警告] 非同期保存キューの初期化に失敗しました (同期保存で動作します)。\n");
+  }
 
   // Initialize Playback & Media Gallery manager
   PlaybackManager playback_mgr;
   playback_manager_init(&playback_mgr, &dcf_storage);
+  playback_manager_set_save_queue(&playback_mgr, &save_queue);
   g_active_playback = &playback_mgr;
   g_active_renderer = renderer;
   g_active_camera = camera;
@@ -412,25 +450,48 @@ int main(int argc, char *argv[]) {
           break;
         }
 
+        case SDLK_j: {
+          if (shift_held) {
+            quality_preset_index =
+                (quality_preset_index - 1 + JPEG_QUALITY_PRESET_COUNT) %
+                JPEG_QUALITY_PRESET_COUNT;
+          } else {
+            quality_preset_index =
+                (quality_preset_index + 1) % JPEG_QUALITY_PRESET_COUNT;
+          }
+          g_active_jpeg_quality =
+              JPEG_QUALITY_PRESETS[quality_preset_index].quality;
+          printf("[-] JPEG保存画質: %s\n",
+                 JPEG_QUALITY_PRESETS[quality_preset_index].name);
+          break;
+        }
+
         case SDLK_r: {
           ev_step_index = 0;
           iso_preset_index = 0;
           shutter_preset_index = 0;
+          quality_preset_index = 1;
+          g_active_jpeg_quality =
+              JPEG_QUALITY_PRESETS[quality_preset_index].quality;
           camera_stream_set_ev(camera, 0.0f);
           camera_stream_set_iso(camera, 0);
           camera_stream_set_shutter_speed(camera, 0);
-          printf("[-] 露出設定をリセットしました (EV: 0.0, ISO: Auto, SS: "
-                 "Auto)\n");
+          printf("[-] 露出・画質設定をリセットしました (EV: 0.0, ISO: Auto, SS: "
+                 "Auto, JPG: %s)\n",
+                 JPEG_QUALITY_PRESETS[quality_preset_index].name);
           break;
         }
 
         case SDLK_SPACE: {
-          // Capture high-resolution still image on 'Space' key using DCF file
-          // naming
-          char filepath[512];
-          if (dcf_storage_next_filepath(&dcf_storage, filepath,
-                                        sizeof(filepath))) {
-            camera_stream_capture_still(camera, filepath, save_still_jpeg);
+          // Request asynchronous high-resolution still capture on 'Space' key
+          if (camera_stream_is_still_pending(camera)) {
+            printf("[-] 撮影処理中です...\n");
+          } else if (async_save_queue_get_pending_count(&save_queue) >=
+                     ASYNC_SAVE_QUEUE_CAPACITY) {
+            fprintf(stderr,
+                    "[警告] 保存キューが満杯です。書き込み完了をお待ちください。\n");
+          } else {
+            camera_stream_request_still(camera);
           }
           break;
         }
@@ -438,6 +499,42 @@ int main(int argc, char *argv[]) {
         default:
           break;
         }
+      }
+    }
+
+    // Poll completed asynchronous still capture and dispatch to Quick Review +
+    // background save queue
+    CameraCapturedStill captured_still;
+    if (camera_stream_poll_captured_still(camera, &captured_still)) {
+      char filepath[512];
+      if (dcf_storage_next_filepath(&dcf_storage, filepath, sizeof(filepath))) {
+        // 1. Immediately start Quick Review from in-memory raw buffer (zero
+        // disk wait)
+        playback_manager_start_quick_review(
+            &playback_mgr, renderer, filepath, captured_still.data,
+            captured_still.width, captured_still.height, captured_still.stride,
+            captured_still.is_bgr, &captured_still.exp_status);
+
+        // 2. Prepare Exif 2.3 metadata
+        ExifMetadata exif;
+        exif_metadata_init(&exif, camera_stream_get_model_name(camera),
+                           captured_still.width, captured_still.height,
+                           &captured_still.exp_status);
+
+        // 3. Enqueue for background JPEG encoding & SD card write
+        int jpeg_q = JPEG_QUALITY_PRESETS[quality_preset_index].quality;
+        if (!async_save_queue_push(
+                &save_queue, filepath, captured_still.data, captured_still.size,
+                captured_still.width, captured_still.height,
+                captured_still.stride, captured_still.is_bgr, jpeg_q, &exif)) {
+          // Fallback to synchronous save if background queue was unavailable
+          save_still_jpeg(filepath, captured_still.data, captured_still.width,
+                          captured_still.height, captured_still.stride,
+                          captured_still.is_bgr);
+          free(captured_still.data);
+        }
+      } else {
+        free(captured_still.data);
       }
     }
 
@@ -480,8 +577,11 @@ int main(int argc, char *argv[]) {
 
       CameraExposureStatus exp_status;
       camera_stream_get_exposure_status(camera, &exp_status);
-      text_renderer_draw_exposure_hud(renderer, cur_win_w, cur_win_h,
-                                      &exp_status);
+      int pending_saves = async_save_queue_get_pending_count(&save_queue) +
+                          (camera_stream_is_still_pending(camera) ? 1 : 0);
+      text_renderer_draw_exposure_hud(
+          renderer, cur_win_w, cur_win_h, &exp_status,
+          JPEG_QUALITY_PRESETS[quality_preset_index].hud_label, pending_saves);
 
       playback_manager_render_toast(&playback_mgr, renderer, cur_win_w,
                                     cur_win_h);
@@ -499,6 +599,11 @@ int main(int argc, char *argv[]) {
 
   // 9. Cleanup resources
   printf("[-] 終了処理を実行中...\n");
+  if (async_save_queue_get_pending_count(&save_queue) > 0) {
+    printf("[-] バックグラウンド保存キューの完了を待機中...\n");
+    async_save_queue_wait_idle(&save_queue);
+  }
+  async_save_queue_destroy(&save_queue);
   g_active_playback = NULL;
   g_active_renderer = NULL;
   g_active_camera = NULL;

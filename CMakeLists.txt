@@ -32,6 +32,9 @@ set(SOURCES
     src/camera_stream.cpp
     src/text_renderer.c
     src/dcf_storage.c
+    src/playback_manager.c
+    src/exif_writer.c
+    src/async_save_queue.c
 )
 
 add_executable(rubuscam ${SOURCES})
@@ -50,4 +53,5 @@ target_link_libraries(rubuscam PRIVATE
     PkgConfig::SDL2_IMAGE
     PkgConfig::SDL2_TTF
     Threads::Threads
+    m
 )

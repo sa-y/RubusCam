@@ -21,7 +21,7 @@ static int g_guide_h_no_af = 0;
 static SDL_Texture *g_hud_texture = NULL;
 static int g_hud_w = 0;
 static int g_hud_h = 0;
-static char g_last_hud_text[256] = {0};
+static char g_last_hud_text[320] = {0};
 
 static const char *DEFAULT_FONT_PATHS[] = {
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -136,8 +136,8 @@ void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported) {
 
   const char *guide_text =
       af_supported
-          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [R]:Reset [Q]:Quit"
-          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [R]:Reset [Q]:Quit";
+          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [J]:Qual [R]:Reset [Q]:Quit"
+          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [J]:Qual [R]:Reset [Q]:Quit";
 
   // Lazily create and cache guide text texture on GPU
   if (!*tex_slot && g_font) {
@@ -185,7 +185,9 @@ void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported) {
 
 void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
                                      int win_h,
-                                     const CameraExposureStatus *status) {
+                                     const CameraExposureStatus *status,
+                                     const char *quality_label,
+                                     int pending_saves) {
   (void)win_w;
   if (!renderer || !status) {
     return;
@@ -217,9 +219,18 @@ void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
     snprintf(iso_str, sizeof(iso_str), "ISO: Auto (%d)", actual_iso);
   }
 
-  char hud_text[256];
-  snprintf(hud_text, sizeof(hud_text), "%s   |   %s   |   EV: %+.1f", ss_str,
-           iso_str, status->ev_compensation);
+  const char *q_str =
+      (quality_label && quality_label[0] != '\0') ? quality_label : "Fine (90%)";
+
+  char save_str[48] = "";
+  if (pending_saves > 0) {
+    snprintf(save_str, sizeof(save_str), "   |   [Saving: %d]", pending_saves);
+  }
+
+  char hud_text[320];
+  snprintf(hud_text, sizeof(hud_text),
+           "%s   |   %s   |   EV: %+.1f   |   JPG: %s%s", ss_str, iso_str,
+           status->ev_compensation, q_str, save_str);
 
   // Re-rasterize only when text string changes
   if (strcmp(hud_text, g_last_hud_text) != 0 && g_font) {

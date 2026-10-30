@@ -52,6 +52,11 @@ void camera_stream_stop(CameraStream *cam);
 bool camera_stream_is_af_supported(const CameraStream *cam);
 
 /*
+ * Return the detected camera model or sensor identifier string (e.g. "imx708").
+ */
+const char *camera_stream_get_model_name(const CameraStream *cam);
+
+/*
  * Preview stream dimension & format queries.
  */
 int camera_stream_get_width(const CameraStream *cam);
@@ -135,6 +140,44 @@ typedef bool (*CameraStillSaveCallback)(const char *filename,
  */
 bool camera_stream_capture_still(CameraStream *cam, const char *filename,
                                  CameraStillSaveCallback save_cb);
+
+/*
+ * High-resolution captured still frame returned by non-blocking capture API.
+ * Ownership of `data` (heap-allocated via malloc) is transferred to the caller,
+ * who must release it with free().
+ */
+typedef struct CameraCapturedStill {
+  uint8_t *data;
+  size_t size;
+  int width;
+  int height;
+  int stride;
+  bool is_bgr;
+  CameraExposureStatus exp_status;
+} CameraCapturedStill;
+
+/*
+ * Request an asynchronous high-resolution still capture without blocking the
+ * preview loop (in dual-stream mode). Poll completion via
+ * camera_stream_poll_captured_still().
+ * Returns true if capture request was accepted, false otherwise.
+ */
+bool camera_stream_request_still(CameraStream *cam);
+
+/*
+ * Return true if an asynchronous still capture is currently in flight or ready
+ * to be polled.
+ */
+bool camera_stream_is_still_pending(const CameraStream *cam);
+
+/*
+ * Poll for a completed asynchronous still capture.
+ * If a captured frame is ready, populates *out_still (transferring ownership of
+ * out_still->data to the caller) and returns true. Otherwise returns false
+ * immediately without blocking.
+ */
+bool camera_stream_poll_captured_still(CameraStream *cam,
+                                       CameraCapturedStill *out_still);
 
 #ifdef __cplusplus
 }

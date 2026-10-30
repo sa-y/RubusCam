@@ -277,6 +277,10 @@ static void parse_exif_ifd(const uint8_t *tiff_base, size_t tiff_len,
         meta->focal_length_mm = (float)num / (float)den;
         meta->has_exif = true;
       }
+    } else if (tag == 0xA403 && type == 3) {
+      /* WhiteBalance (SHORT: 0 = Auto, 1 = Manual) */
+      meta->wb_mode = read_u16(tiff_base + pos + 8, le);
+      meta->has_exif = true;
     }
   }
 }
@@ -288,16 +292,7 @@ static void parse_jpeg_metadata(PlaybackManager *pm, const DcfMediaEntry *entry,
     return;
   }
 
-  /* 1. Format fallback timestamp from file mtime */
-  if (entry->mtime_sec > 0) {
-    time_t t = (time_t)entry->mtime_sec;
-    struct tm tm_buf;
-    localtime_r(&t, &tm_buf);
-    strftime(out_meta->datetime_str, sizeof(out_meta->datetime_str),
-             "%Y-%m-%d %H:%M:%S", &tm_buf);
-  }
-
-  /* 2. Check in-session capture metadata cache first */
+  /* 1. Check in-session capture metadata cache first as baseline */
   if (pm) {
     for (size_t i = 0; i < PLAYBACK_META_CACHE_SIZE; ++i) {
       const CaptureMetaRecord *rec = &pm->meta_cache[i];
@@ -320,7 +315,7 @@ static void parse_jpeg_metadata(PlaybackManager *pm, const DcfMediaEntry *entry,
     }
   }
 
-  /* 3. Inspect JPEG markers (SOF0/SOF2 for dimensions, APP1 for Exif) */
+  /* 2. Inspect JPEG markers (SOF0/SOF2 for dimensions, APP1 for Exif) */
   FILE *fp = fopen(entry->filepath, "rb");
   if (!fp) {
     return;
@@ -330,56 +325,63 @@ static void parse_jpeg_metadata(PlaybackManager *pm, const DcfMediaEntry *entry,
   size_t nread = fread(buf, 1, sizeof(buf), fp);
   fclose(fp);
 
-  if (nread < 4 || buf[0] != 0xFF || buf[1] != 0xD8) {
-    return;
+  if (nread >= 4 && buf[0] == 0xFF && buf[1] == 0xD8) {
+    size_t pos = 2;
+    while (pos + 4 <= nread) {
+      if (buf[pos] != 0xFF) {
+        pos++;
+        continue;
+      }
+      while (pos < nread && buf[pos] == 0xFF) {
+        pos++;
+      }
+      if (pos >= nread) {
+        break;
+      }
+      uint8_t marker = buf[pos++];
+      if (marker == 0xD9 || marker == 0xDA) {
+        /* EOI or SOS (Start of Scan) */
+        break;
+      }
+      if (pos + 2 > nread) {
+        break;
+      }
+      uint16_t seg_len = ((uint16_t)buf[pos] << 8) | (uint16_t)buf[pos + 1];
+      if (seg_len < 2 || pos + seg_len > nread) {
+        break;
+      }
+
+      const uint8_t *seg_data = buf + pos + 2;
+      size_t seg_payload_len = seg_len - 2;
+
+      if ((marker == 0xC0 || marker == 0xC2) && seg_payload_len >= 5) {
+        /* SOF0 (Baseline) or SOF2 (Progressive) */
+        out_meta->height = ((int)seg_data[1] << 8) | (int)seg_data[2];
+        out_meta->width = ((int)seg_data[3] << 8) | (int)seg_data[4];
+      } else if (marker == 0xE1 && seg_payload_len > 14 &&
+                 memcmp(seg_data, "Exif\0\0", 6) == 0) {
+        /* APP1 Exif header */
+        const uint8_t *tiff_base = seg_data + 6;
+        size_t tiff_len = seg_payload_len - 6;
+        bool le = (tiff_base[0] == 'I' && tiff_base[1] == 'I');
+        bool be = (tiff_base[0] == 'M' && tiff_base[1] == 'M');
+        if ((le || be) && read_u16(tiff_base + 2, le) == 0x002A) {
+          uint32_t ifd0_off = read_u32(tiff_base + 4, le);
+          parse_exif_ifd(tiff_base, tiff_len, ifd0_off, le, out_meta, 0);
+        }
+      }
+
+      pos += seg_len;
+    }
   }
 
-  size_t pos = 2;
-  while (pos + 4 <= nread) {
-    if (buf[pos] != 0xFF) {
-      pos++;
-      continue;
-    }
-    while (pos < nread && buf[pos] == 0xFF) {
-      pos++;
-    }
-    if (pos >= nread) {
-      break;
-    }
-    uint8_t marker = buf[pos++];
-    if (marker == 0xD9 || marker == 0xDA) {
-      /* EOI or SOS (Start of Scan) */
-      break;
-    }
-    if (pos + 2 > nread) {
-      break;
-    }
-    uint16_t seg_len = ((uint16_t)buf[pos] << 8) | (uint16_t)buf[pos + 1];
-    if (seg_len < 2 || pos + seg_len > nread) {
-      break;
-    }
-
-    const uint8_t *seg_data = buf + pos + 2;
-    size_t seg_payload_len = seg_len - 2;
-
-    if ((marker == 0xC0 || marker == 0xC2) && seg_payload_len >= 5) {
-      /* SOF0 (Baseline) or SOF2 (Progressive) */
-      out_meta->height = ((int)seg_data[1] << 8) | (int)seg_data[2];
-      out_meta->width = ((int)seg_data[3] << 8) | (int)seg_data[4];
-    } else if (marker == 0xE1 && seg_payload_len > 14 &&
-               memcmp(seg_data, "Exif\0\0", 6) == 0) {
-      /* APP1 Exif header */
-      const uint8_t *tiff_base = seg_data + 6;
-      size_t tiff_len = seg_payload_len - 6;
-      bool le = (tiff_base[0] == 'I' && tiff_base[1] == 'I');
-      bool be = (tiff_base[0] == 'M' && tiff_base[1] == 'M');
-      if ((le || be) && read_u16(tiff_base + 2, le) == 0x002A) {
-        uint32_t ifd0_off = read_u32(tiff_base + 4, le);
-        parse_exif_ifd(tiff_base, tiff_len, ifd0_off, le, out_meta, 0);
-      }
-    }
-
-    pos += seg_len;
+  /* 3. Format fallback timestamp from file mtime if Exif DateTime was absent */
+  if (out_meta->datetime_str[0] == '\0' && entry->mtime_sec > 0) {
+    time_t t = (time_t)entry->mtime_sec;
+    struct tm tm_buf;
+    localtime_r(&t, &tm_buf);
+    strftime(out_meta->datetime_str, sizeof(out_meta->datetime_str),
+             "%Y:%m:%d %H:%M:%S", &tm_buf);
   }
 }
 
@@ -554,11 +556,20 @@ void playback_manager_init(PlaybackManager *pm, DcfStorage *dcf) {
   pm->mode = APP_MODE_LIVE;
   pm->view_mode = PLAY_VIEW_SINGLE;
   pm->dcf = dcf;
+  pm->save_queue = NULL;
   pm->quick_review_duration_ms = PLAYBACK_DEFAULT_QUICK_REVIEW_MS;
   pm->current_index = -1;
   pm->show_detail_info = true;
   pm->cached_grid_page = -1;
   reset_zoom_and_pan(pm);
+}
+
+void playback_manager_set_save_queue(PlaybackManager *pm,
+                                     AsyncSaveQueue *save_queue) {
+  if (!pm) {
+    return;
+  }
+  pm->save_queue = save_queue;
 }
 
 void playback_manager_destroy(PlaybackManager *pm) {
@@ -636,6 +647,11 @@ void playback_manager_enter_playback(PlaybackManager *pm,
                                      const char *focus_filepath) {
   if (!pm || !renderer) {
     return;
+  }
+
+  /* Ensure any in-flight background JPEG writes complete before scanning DCIM */
+  if (pm->save_queue) {
+    async_save_queue_wait_idle(pm->save_queue);
   }
 
   free_current_texture(pm);
@@ -811,7 +827,8 @@ bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
     case SDLK_d:
       if (pm->quick_review_protected) {
         set_toast(pm, "[警告] 保護された画像は削除できません", 2200);
-      } else if (dcf_storage_delete_file(pm->dcf, pm->quick_review_filepath)) {
+      } else if (async_save_queue_cancel_or_delete(
+                     pm->save_queue, pm->dcf, pm->quick_review_filepath)) {
         printf("[-] クイックレビュー: 直前の撮影画像を破棄しました (%s)\n",
                pm->quick_review_filepath);
         set_toast(pm, "直前の撮影画像を削除しました", 2200);
@@ -821,7 +838,8 @@ bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
 
     case SDLK_l: {
       bool next_prot = !pm->quick_review_protected;
-      if (dcf_storage_set_protected(pm->quick_review_filepath, next_prot)) {
+      if (async_save_queue_set_protected(
+              pm->save_queue, pm->quick_review_filepath, next_prot)) {
         pm->quick_review_protected = next_prot;
         /* Extend review timer slightly so user sees confirmation */
         pm->quick_review_start_ms = SDL_GetTicks();
@@ -1258,11 +1276,16 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
                  (double)pm->current_meta.height) /
                 1000000.0;
 
-    snprintf(line1, sizeof(line1), "[%d / %zu]  %s   (%s)",
+    snprintf(line1, sizeof(line1), "[%d / %zu]  %s   (%s)%s%s",
              pm->current_index + 1, pm->media_list.count, entry->display_name,
-             entry->is_protected ? "Protected" : "Normal");
+             entry->is_protected ? "Protected" : "Normal",
+             pm->current_meta.camera_model[0] != '\0' ? "   |   Model: " : "",
+             pm->current_meta.camera_model[0] != '\0'
+                 ? pm->current_meta.camera_model
+                 : "");
 
-    snprintf(line2, sizeof(line2), "Resolution: %d x %d (%.1f MP)   |   Size: %.2f MiB   |   Date: %s",
+    snprintf(line2, sizeof(line2),
+             "Resolution: %d x %d (%.1f MP)   |   Size: %.2f MiB   |   Date: %s",
              pm->current_meta.width, pm->current_meta.height, mp, mib,
              pm->current_meta.datetime_str[0] != '\0'
                  ? pm->current_meta.datetime_str
@@ -1277,9 +1300,17 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
       snprintf(iso_buf, sizeof(iso_buf), "---");
     }
 
+    char optics_buf[64] = "";
+    if (pm->current_meta.f_number > 0.0f &&
+        pm->current_meta.focal_length_mm > 0.0f) {
+      snprintf(optics_buf, sizeof(optics_buf), "   |   F%.1f  %.2fmm",
+               pm->current_meta.f_number, pm->current_meta.focal_length_mm);
+    }
+    const char *wb_label = pm->current_meta.wb_mode == 1 ? "Manual" : "Auto";
+
     snprintf(line3, sizeof(line3),
-             "Exif/Exposure:  SS %s   |   ISO %s   |   EV %+.1f   |   Zoom %.0fx",
-             ss_buf, iso_buf, pm->current_meta.ev_bias,
+             "Exif: SS %s  |  ISO %s  |  EV %+.1f%s  |  WB %s  |  Zoom %.0fx",
+             ss_buf, iso_buf, pm->current_meta.ev_bias, optics_buf, wb_label,
              ZOOM_FACTORS[pm->zoom_step_index]);
 
     int w1 = 0, w2 = 0, w3 = 0, lh = 20;
