@@ -12,9 +12,13 @@
 
 #include "camera_stream.h"
 #include "dcf_storage.h"
+#include "playback_manager.h"
 #include "text_renderer.h"
 
 static volatile sig_atomic_t g_running = 1;
+static PlaybackManager *g_active_playback = NULL;
+static SDL_Renderer *g_active_renderer = NULL;
+static CameraStream *g_active_camera = NULL;
 
 static const int ISO_PRESETS[] = {0, 100, 200, 400, 800, 1600, 3200};
 static const int ISO_PRESET_COUNT =
@@ -91,6 +95,15 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
   if (ret != 0) {
     fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
             IMG_GetError());
+  } else if (g_active_playback && g_active_renderer) {
+    CameraExposureStatus exp_status;
+    memset(&exp_status, 0, sizeof(exp_status));
+    if (g_active_camera) {
+      camera_stream_get_exposure_status(g_active_camera, &exp_status);
+    }
+    playback_manager_start_quick_review(g_active_playback, g_active_renderer,
+                                        filename, src_data, width, height,
+                                        stride, is_bgr, &exp_status);
   }
 
   SDL_FreeSurface(surface);
@@ -229,7 +242,8 @@ int main(int argc, char *argv[]) {
   }
 
   printf("=========================================\n");
-  printf(" [Space]        : 写真を撮影して保存\n");
+  printf(" [Space]        : 写真を撮影して保存 (直後にクイックレビュー表示)\n");
+  printf(" [P]            : 再生・ギャラリーモード切替 (ズーム/グリッド/削除/保護)\n");
   if (camera_stream_is_af_supported(camera)) {
     printf(" [F]            : オートフォーカス再調整 (ワンショットAF)\n");
   }
@@ -288,6 +302,13 @@ int main(int argc, char *argv[]) {
   int iso_preset_index = 0;
   int shutter_preset_index = 0;
 
+  // Initialize Playback & Media Gallery manager
+  PlaybackManager playback_mgr;
+  playback_manager_init(&playback_mgr, &dcf_storage);
+  g_active_playback = &playback_mgr;
+  g_active_renderer = renderer;
+  g_active_camera = camera;
+
   // 3. Main event & GPU rendering loop
   while (g_running) {
     uint32_t frame_start = SDL_GetTicks();
@@ -298,12 +319,23 @@ int main(int argc, char *argv[]) {
       if (event.type == SDL_QUIT) {
         g_running = 0;
       } else if (event.type == SDL_KEYDOWN) {
+        if (event.key.keysym.sym == SDLK_q) {
+          g_running = 0;
+          continue;
+        }
+
+        // Delegate key events to Playback / Quick Review manager when active
+        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+          playback_manager_handle_key(&playback_mgr, renderer, &event.key);
+          continue;
+        }
+
         bool shift_held = (event.key.keysym.mod & KMOD_SHIFT) != 0;
 
         switch (event.key.keysym.sym) {
-        case SDLK_q:
-          // Quit on 'Q' key
-          g_running = 0;
+        case SDLK_p:
+          // Switch to Playback / Gallery mode on 'P' key
+          playback_manager_enter_playback(&playback_mgr, renderer, NULL);
           break;
 
         case SDLK_f:
@@ -409,38 +441,51 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    // 4. Retrieve latest camera frame and update GPU texture
-    bool has_frame = camera_stream_get_latest_frame(camera, frame_buffer,
-                                                    frame_size, &frame_seq);
-    if (has_frame) {
-      int stride = camera_stream_get_stride(camera);
-      if (stride == 0) {
-        stride = cam_width * 3;
-      }
-      SDL_UpdateTexture(camera_texture, NULL, frame_buffer, stride);
-    }
+    // Update playback/quick-review timers
+    playback_manager_update(&playback_mgr, renderer);
 
-    // 5. Render camera frame with aspect-ratio preserving viewport
     int cur_win_w = screen_width;
     int cur_win_h = screen_height;
     SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
 
-    SDL_Rect viewport_rect;
-    calculate_viewport_rect(cam_width, cam_height, cur_win_w, cur_win_h,
-                            &viewport_rect);
+    if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+      // Drain incoming camera frames in background so buffer sequence stays fresh
+      camera_stream_get_latest_frame(camera, frame_buffer, frame_size,
+                                     &frame_seq);
+      playback_manager_render(&playback_mgr, renderer, cur_win_w, cur_win_h);
+    } else {
+      // 4. Retrieve latest camera frame and update GPU texture
+      bool has_frame = camera_stream_get_latest_frame(camera, frame_buffer,
+                                                      frame_size, &frame_seq);
+      if (has_frame) {
+        int stride = camera_stream_get_stride(camera);
+        if (stride == 0) {
+          stride = cam_width * 3;
+        }
+        SDL_UpdateTexture(camera_texture, NULL, frame_buffer, stride);
+      }
 
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
+      // 5. Render camera frame with aspect-ratio preserving viewport
+      SDL_Rect viewport_rect;
+      calculate_viewport_rect(cam_width, cam_height, cur_win_w, cur_win_h,
+                              &viewport_rect);
 
-    SDL_RenderCopy(renderer, camera_texture, NULL, &viewport_rect);
+      SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+      SDL_RenderClear(renderer);
 
-    // 6. Draw overlay guide text & exposure HUD via SDL2_ttf
-    text_renderer_draw_guide(renderer, camera_stream_is_af_supported(camera));
+      SDL_RenderCopy(renderer, camera_texture, NULL, &viewport_rect);
 
-    CameraExposureStatus exp_status;
-    camera_stream_get_exposure_status(camera, &exp_status);
-    text_renderer_draw_exposure_hud(renderer, cur_win_w, cur_win_h,
-                                    &exp_status);
+      // 6. Draw overlay guide text & exposure HUD via SDL2_ttf
+      text_renderer_draw_guide(renderer, camera_stream_is_af_supported(camera));
+
+      CameraExposureStatus exp_status;
+      camera_stream_get_exposure_status(camera, &exp_status);
+      text_renderer_draw_exposure_hud(renderer, cur_win_w, cur_win_h,
+                                      &exp_status);
+
+      playback_manager_render_toast(&playback_mgr, renderer, cur_win_w,
+                                    cur_win_h);
+    }
 
     // 7. Present frame to physical display
     SDL_RenderPresent(renderer);
@@ -454,6 +499,10 @@ int main(int argc, char *argv[]) {
 
   // 9. Cleanup resources
   printf("[-] 終了処理を実行中...\n");
+  g_active_playback = NULL;
+  g_active_renderer = NULL;
+  g_active_camera = NULL;
+  playback_manager_destroy(&playback_mgr);
   free(frame_buffer);
   camera_stream_stop(camera);
   camera_stream_destroy(camera);

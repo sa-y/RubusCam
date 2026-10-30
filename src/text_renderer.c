@@ -136,8 +136,8 @@ void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported) {
 
   const char *guide_text =
       af_supported
-          ? "[SPACE]:Capture [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [R]:Reset [Q]:Quit"
-          : "[SPACE]:Capture [Up/Dn]:EV [I]:ISO [S]:SS [R]:Reset [Q]:Quit";
+          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [R]:Reset [Q]:Quit"
+          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [R]:Reset [Q]:Quit";
 
   // Lazily create and cache guide text texture on GPU
   if (!*tex_slot && g_font) {
@@ -263,5 +263,106 @@ void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
     text_rect.w = g_hud_w;
     text_rect.h = g_hud_h;
     SDL_RenderCopy(renderer, g_hud_texture, NULL, &text_rect);
+  }
+}
+
+bool text_renderer_measure_text(const char *text, int *out_w, int *out_h) {
+  if (!g_font || !text || text[0] == '\0') {
+    if (out_w) {
+      *out_w = 0;
+    }
+    if (out_h) {
+      *out_h = g_font ? TTF_FontHeight(g_font) : 18;
+    }
+    return false;
+  }
+
+  int w = 0;
+  int h = 0;
+  if (TTF_SizeUTF8(g_font, text, &w, &h) != 0) {
+    return false;
+  }
+  if (out_w) {
+    *out_w = w;
+  }
+  if (out_h) {
+    *out_h = h;
+  }
+  return true;
+}
+
+void text_renderer_draw_text(SDL_Renderer *renderer, const char *text, int x,
+                             int y, SDL_Color color, int *out_w, int *out_h) {
+  if (out_w) {
+    *out_w = 0;
+  }
+  if (out_h) {
+    *out_h = g_font ? TTF_FontHeight(g_font) : 18;
+  }
+  if (!renderer || !g_font || !text || text[0] == '\0') {
+    return;
+  }
+
+  SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, text, color);
+  if (!surf) {
+    return;
+  }
+
+  SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, surf);
+  if (tex) {
+    SDL_Rect dst = {x, y, surf->w, surf->h};
+    SDL_RenderCopy(renderer, tex, NULL, &dst);
+    SDL_DestroyTexture(tex);
+  }
+
+  if (out_w) {
+    *out_w = surf->w;
+  }
+  if (out_h) {
+    *out_h = surf->h;
+  }
+  SDL_FreeSurface(surf);
+}
+
+void text_renderer_draw_panel(SDL_Renderer *renderer, const SDL_Rect *rect,
+                              SDL_Color bg_color, SDL_Color border_color) {
+  if (!renderer || !rect) {
+    return;
+  }
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+  SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b,
+                         bg_color.a);
+  SDL_RenderFillRect(renderer, rect);
+
+  if (border_color.a > 0) {
+    SDL_SetRenderDrawColor(renderer, border_color.r, border_color.g,
+                           border_color.b, border_color.a);
+    SDL_RenderDrawRect(renderer, rect);
+  }
+}
+
+void text_renderer_draw_badge(SDL_Renderer *renderer, const char *text, int x,
+                              int y, SDL_Color text_color, SDL_Color bg_color,
+                              SDL_Color border_color, SDL_Rect *out_box) {
+  if (!renderer || !text) {
+    return;
+  }
+
+  int tw = 0;
+  int th = 0;
+  if (!text_renderer_measure_text(text, &tw, &th)) {
+    tw = (int)strlen(text) * 9;
+    th = 18;
+  }
+
+  const int pad_x = 12;
+  const int pad_y = 6;
+  SDL_Rect box = {x, y, tw + pad_x * 2, th + pad_y * 2};
+  text_renderer_draw_panel(renderer, &box, bg_color, border_color);
+  text_renderer_draw_text(renderer, text, x + pad_x, y + pad_y, text_color,
+                          NULL, NULL);
+
+  if (out_box) {
+    *out_box = box;
   }
 }

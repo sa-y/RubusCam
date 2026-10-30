@@ -65,6 +65,70 @@ bool dcf_storage_get_free_space(const DcfStorage *dcf,
 bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path,
                                size_t out_size);
 
+/*
+ * Resynchronize current directory and file number counters by rescanning DCIM.
+ * Useful after deleting the most recently captured image(s).
+ */
+void dcf_storage_resync(DcfStorage *dcf);
+
+/*
+ * Metadata entry for a single captured media file in DCIM storage.
+ */
+typedef struct {
+  char filepath[512];     /* Full relative path, e.g. "DCIM/100_PICA/IMG_0001.JPG" */
+  char display_name[512]; /* Short display name, e.g. "100_PICA/IMG_0001.JPG" */
+  char filename[256];     /* Base file name, e.g. "IMG_0001.JPG" */
+  uint64_t file_size;     /* File size in bytes */
+  int64_t mtime_sec;      /* Last modification time (epoch seconds) */
+  bool is_protected;      /* True if file is marked read-only (protected) */
+} DcfMediaEntry;
+
+/*
+ * Dynamic array of scanned DCF media entries, sorted in chronological/DCF order.
+ */
+typedef struct {
+  DcfMediaEntry *entries;
+  size_t count;
+  size_t capacity;
+} DcfMediaList;
+
+/*
+ * Scan all subdirectories under dcf->base_path (both standard NNN_PICA and
+ * YYYYMMDD directories) and populate out_list with all .JPG/.JPEG files sorted
+ * by directory name and file name.
+ * Caller must free resources with dcf_storage_free_media_list().
+ */
+bool dcf_storage_scan_media(const DcfStorage *dcf, DcfMediaList *out_list);
+
+/*
+ * Free memory allocated inside a DcfMediaList.
+ */
+void dcf_storage_free_media_list(DcfMediaList *list);
+
+/*
+ * Check if a media file is protected (read-only).
+ */
+bool dcf_storage_is_protected(const char *filepath);
+
+/*
+ * Set or clear protection (read-only flag via chmod) on a media file.
+ * Returns true on success, false on error.
+ */
+bool dcf_storage_set_protected(const char *filepath, bool protect);
+
+/*
+ * Delete a single media file if it is not protected.
+ * Returns true if deleted, false if protected or unlink failed.
+ */
+bool dcf_storage_delete_file(DcfStorage *dcf, const char *filepath);
+
+/*
+ * Delete all unprotected media files found in the given media list (or scanned
+ * from DCIM if list is NULL).
+ * Returns the number of files deleted, or -1 on error.
+ */
+int dcf_storage_delete_all_unprotected(DcfStorage *dcf);
+
 #ifdef __cplusplus
 }
 #endif

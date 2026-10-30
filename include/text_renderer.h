@@ -40,6 +40,33 @@ void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
                                      int win_h,
                                      const CameraExposureStatus *status);
 
+/*
+ * Measure the pixel width and height of a UTF-8 string using the loaded font.
+ * Returns true on success, false if no font is loaded.
+ */
+bool text_renderer_measure_text(const char *text, int *out_w, int *out_h);
+
+/*
+ * Render a UTF-8 string at (x, y) with the specified color.
+ * Optionally outputs the rendered width and height.
+ */
+void text_renderer_draw_text(SDL_Renderer *renderer, const char *text, int x,
+                             int y, SDL_Color color, int *out_w, int *out_h);
+
+/*
+ * Draw a semi-transparent bordered rectangular panel at rect.
+ */
+void text_renderer_draw_panel(SDL_Renderer *renderer, const SDL_Rect *rect,
+                              SDL_Color bg_color, SDL_Color border_color);
+
+/*
+ * Draw a single-line pill/badge with background panel and border at (x, y).
+ * Outputs the total bounding box in out_box if non-NULL.
+ */
+void text_renderer_draw_badge(SDL_Renderer *renderer, const char *text, int x,
+                              int y, SDL_Color text_color, SDL_Color bg_color,
+                              SDL_Color border_color, SDL_Rect *out_box);
+
 #ifdef __cplusplus
 }
 #endif

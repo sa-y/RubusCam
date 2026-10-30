@@ -341,3 +341,272 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
   return false;
 }
 
+void dcf_storage_resync(DcfStorage *dcf) {
+  if (!dcf) {
+    return;
+  }
+
+  dcf->current_dir_num = DCF_DIR_MIN;
+  dcf->current_file_num = 0;
+
+  if (!is_directory(dcf->base_path)) {
+    return;
+  }
+
+  if (dcf->mode == DCF_DIR_MODE_STANDARD) {
+    dcf->current_dir_num = scan_max_dir_number(dcf->base_path, dcf->dir_suffix);
+    char active_dir[512];
+    snprintf(active_dir, sizeof(active_dir), "%s/%03d%s",
+             dcf->base_path, dcf->current_dir_num, dcf->dir_suffix);
+    if (is_directory(active_dir)) {
+      dcf->current_file_num = scan_max_file_number(active_dir, dcf->file_prefix);
+    }
+  } else {
+    get_current_date_str(dcf->current_date_str, sizeof(dcf->current_date_str));
+    char date_dir[512];
+    snprintf(date_dir, sizeof(date_dir), "%s/%s",
+             dcf->base_path, dcf->current_date_str);
+    if (is_directory(date_dir)) {
+      dcf->current_file_num = scan_max_file_number(date_dir, dcf->file_prefix);
+    }
+  }
+}
+
+static bool has_jpeg_extension(const char *name) {
+  if (!name) {
+    return false;
+  }
+  const char *dot = strrchr(name, '.');
+  if (!dot) {
+    return false;
+  }
+  if (toupper((unsigned char)dot[1]) == 'J' &&
+      toupper((unsigned char)dot[2]) == 'P' &&
+      toupper((unsigned char)dot[3]) == 'G' && dot[4] == '\0') {
+    return true;
+  }
+  if (toupper((unsigned char)dot[1]) == 'J' &&
+      toupper((unsigned char)dot[2]) == 'P' &&
+      toupper((unsigned char)dot[3]) == 'E' &&
+      toupper((unsigned char)dot[4]) == 'G' && dot[5] == '\0') {
+    return true;
+  }
+  return false;
+}
+
+static bool media_list_push(DcfMediaList *list, const DcfMediaEntry *entry) {
+  if (list->count >= list->capacity) {
+    size_t new_cap = list->capacity == 0 ? 32 : list->capacity * 2;
+    DcfMediaEntry *new_arr =
+        (DcfMediaEntry *)realloc(list->entries, new_cap * sizeof(DcfMediaEntry));
+    if (!new_arr) {
+      return false;
+    }
+    list->entries = new_arr;
+    list->capacity = new_cap;
+  }
+  list->entries[list->count++] = *entry;
+  return true;
+}
+
+static int compare_media_entries(const void *a, const void *b) {
+  const DcfMediaEntry *ea = (const DcfMediaEntry *)a;
+  const DcfMediaEntry *eb = (const DcfMediaEntry *)b;
+  int cmp = strcmp(ea->display_name, eb->display_name);
+  if (cmp != 0) {
+    return cmp;
+  }
+  return strcmp(ea->filepath, eb->filepath);
+}
+
+bool dcf_storage_is_protected(const char *filepath) {
+  if (!filepath || filepath[0] == '\0') {
+    return false;
+  }
+  struct stat st;
+  if (stat(filepath, &st) != 0) {
+    return false;
+  }
+  /* Consider protected if owner write permission bit (S_IWUSR) is cleared */
+  return (st.st_mode & S_IWUSR) == 0;
+}
+
+bool dcf_storage_set_protected(const char *filepath, bool protect) {
+  if (!filepath || filepath[0] == '\0') {
+    return false;
+  }
+  struct stat st;
+  if (stat(filepath, &st) != 0) {
+    return false;
+  }
+
+  mode_t new_mode = st.st_mode;
+  if (protect) {
+    new_mode &= ~(mode_t)(S_IWUSR | S_IWGRP | S_IWOTH);
+    /* Ensure read bits remain set */
+    new_mode |= (mode_t)(S_IRUSR | S_IRGRP | S_IROTH);
+  } else {
+    new_mode |= (mode_t)(S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+  }
+
+  if (chmod(filepath, new_mode) != 0) {
+    fprintf(stderr, "[エラー] プロテクト属性の変更に失敗しました (%s): %s\n",
+            filepath, strerror(errno));
+    return false;
+  }
+  return true;
+}
+
+bool dcf_storage_scan_media(const DcfStorage *dcf, DcfMediaList *out_list) {
+  if (!out_list) {
+    return false;
+  }
+  memset(out_list, 0, sizeof(*out_list));
+
+  const char *base_path =
+      (dcf && dcf->base_path[0] != '\0') ? dcf->base_path : "DCIM";
+  if (!is_directory(base_path)) {
+    return true; /* Empty list when DCIM does not exist yet */
+  }
+
+  DIR *root_dir = opendir(base_path);
+  if (!root_dir) {
+    return false;
+  }
+
+  struct dirent *sub_entry;
+  while ((sub_entry = readdir(root_dir)) != NULL) {
+    if (sub_entry->d_name[0] == '.') {
+      continue;
+    }
+
+    char subdir_path[512];
+    int sub_written = snprintf(subdir_path, sizeof(subdir_path), "%s/%s",
+                               base_path, sub_entry->d_name);
+    if (sub_written < 0 || (size_t)sub_written >= sizeof(subdir_path)) {
+      continue;
+    }
+
+    if (!is_directory(subdir_path)) {
+      continue;
+    }
+
+    DIR *sub_dir = opendir(subdir_path);
+    if (!sub_dir) {
+      continue;
+    }
+
+    struct dirent *file_entry;
+    while ((file_entry = readdir(sub_dir)) != NULL) {
+      if (file_entry->d_name[0] == '.') {
+        continue;
+      }
+      if (!has_jpeg_extension(file_entry->d_name)) {
+        continue;
+      }
+
+      char full_path[512];
+      int fp_written = snprintf(full_path, sizeof(full_path), "%s/%s",
+                                subdir_path, file_entry->d_name);
+      if (fp_written < 0 || (size_t)fp_written >= sizeof(full_path)) {
+        continue;
+      }
+
+      struct stat st;
+      if (stat(full_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        continue;
+      }
+
+      DcfMediaEntry item;
+      memset(&item, 0, sizeof(item));
+      snprintf(item.filepath, sizeof(item.filepath), "%s", full_path);
+      int dn_written =
+          snprintf(item.display_name, sizeof(item.display_name), "%s/%s",
+                   sub_entry->d_name, file_entry->d_name);
+      int fn_written = snprintf(item.filename, sizeof(item.filename), "%s",
+                                file_entry->d_name);
+      if (dn_written < 0 || (size_t)dn_written >= sizeof(item.display_name) ||
+          fn_written < 0 || (size_t)fn_written >= sizeof(item.filename)) {
+        continue;
+      }
+      item.file_size = (uint64_t)st.st_size;
+      item.mtime_sec = (int64_t)st.st_mtime;
+      item.is_protected = (st.st_mode & S_IWUSR) == 0;
+
+      if (!media_list_push(out_list, &item)) {
+        closedir(sub_dir);
+        closedir(root_dir);
+        dcf_storage_free_media_list(out_list);
+        return false;
+      }
+    }
+
+    closedir(sub_dir);
+  }
+
+  closedir(root_dir);
+
+  if (out_list->count > 1) {
+    qsort(out_list->entries, out_list->count, sizeof(DcfMediaEntry),
+          compare_media_entries);
+  }
+
+  return true;
+}
+
+void dcf_storage_free_media_list(DcfMediaList *list) {
+  if (!list) {
+    return;
+  }
+  free(list->entries);
+  list->entries = NULL;
+  list->count = 0;
+  list->capacity = 0;
+}
+
+bool dcf_storage_delete_file(DcfStorage *dcf, const char *filepath) {
+  if (!filepath || filepath[0] == '\0') {
+    return false;
+  }
+
+  if (dcf_storage_is_protected(filepath)) {
+    fprintf(stderr, "[警告] 保護された画像は削除できません: %s\n", filepath);
+    return false;
+  }
+
+  if (unlink(filepath) != 0) {
+    fprintf(stderr, "[エラー] ファイルの削除に失敗しました (%s): %s\n",
+            filepath, strerror(errno));
+    return false;
+  }
+
+  if (dcf) {
+    dcf_storage_resync(dcf);
+  }
+  return true;
+}
+
+int dcf_storage_delete_all_unprotected(DcfStorage *dcf) {
+  DcfMediaList list;
+  if (!dcf_storage_scan_media(dcf, &list)) {
+    return -1;
+  }
+
+  int deleted_count = 0;
+  for (size_t i = 0; i < list.count; ++i) {
+    if (list.entries[i].is_protected) {
+      continue;
+    }
+    if (unlink(list.entries[i].filepath) == 0) {
+      deleted_count++;
+    }
+  }
+
+  dcf_storage_free_media_list(&list);
+
+  if (dcf && deleted_count > 0) {
+    dcf_storage_resync(dcf);
+  }
+  return deleted_count;
+}
+

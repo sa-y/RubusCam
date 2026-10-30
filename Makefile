@@ -12,7 +12,8 @@ BUILD_DIR ?= build
 
 C_SRCS = src/main.c \
          src/text_renderer.c \
-         src/dcf_storage.c
+         src/dcf_storage.c \
+         src/playback_manager.c
 
 CXX_SRCS = src/camera_stream.cpp
 
