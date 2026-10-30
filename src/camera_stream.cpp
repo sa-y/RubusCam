@@ -83,13 +83,16 @@ struct CameraStream {
 
   // Exposure control settings & live sensor metadata
   std::atomic<float> m_evCompensation{0.0f};
-  std::atomic<int> m_isoSetting{0};            // 0 = Auto, 100 ~ 3200
-  std::atomic<int32_t> m_shutterUsSetting{0};  // 0 = Auto, >0 = manual us
-  std::atomic<bool> m_exposureControlsDirty{false};
+  std::atomic<int> m_isoSetting{0};           // 0 = Auto, 100 ~ 3200
+  std::atomic<int32_t> m_shutterUsSetting{0}; // 0 = Auto, >0 = manual us
+  std::atomic<int> m_evPendingCount{0};
+  std::atomic<int> m_isoPendingCount{0};
+  std::atomic<int> m_shutterPendingCount{0};
   std::atomic<float> m_actualGain{1.0f};
   std::atomic<int32_t> m_actualExposureUs{0};
 
-  void applyExposureControls(libcamera::ControlList &ctrls) const;
+  void applyStartExposureControls(libcamera::ControlList &ctrls) const;
+  void applyPendingExposureControls(libcamera::ControlList &ctrls);
   void requestCompleted(libcamera::Request *request);
   void unmapBuffers();
   bool allocateAndMapStreams();
@@ -99,42 +102,80 @@ struct CameraStream {
                                 int &outHeight, int &outStride, bool &outIsBGR);
 };
 
-void CameraStream::applyExposureControls(libcamera::ControlList &ctrls) const {
+void CameraStream::applyStartExposureControls(
+    libcamera::ControlList &ctrls) const {
   const float ev = m_evCompensation.load();
   const int iso = m_isoSetting.load();
   const int32_t shutterUs = m_shutterUsSetting.load();
 
-  // 1. Exposure Value (EV compensation, effective when AE is active on at least
-  // one axis)
+  // Always apply EV compensation on camera start
   ctrls.set(libcamera::controls::ExposureValue, ev);
 
-  // 2. ISO sensitivity via AnalogueGain (ISO 100 = 1.0f, 0 = Auto)
+  // Only set manual AnalogueGain if ISO is manually specified; otherwise let
+  // default Auto Gain run without conflicting control overrides
   if (iso > 0) {
     float gain = static_cast<float>(iso) / 100.0f;
     ctrls.set(libcamera::controls::AnalogueGain, gain);
-  } else {
-    ctrls.set(libcamera::controls::AnalogueGain, 0.0f);
   }
 
-  // 3. Shutter speed via ExposureTime in microseconds (0 = Auto)
+  // Only set manual ExposureTime if shutter speed is manually specified
   if (shutterUs > 0) {
     ctrls.set(libcamera::controls::ExposureTime, shutterUs);
-    // Extend FrameDurationLimits if exposure exceeds default ~30fps (33333 us)
     int64_t minFrameDur =
         shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 100;
     int64_t maxFrameDur =
         shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 33333;
     std::int64_t frameDurationLimits[2] = {minFrameDur, maxFrameDur};
     ctrls.set(libcamera::controls::FrameDurationLimits, frameDurationLimits);
-  } else {
-    ctrls.set(libcamera::controls::ExposureTime, 0);
-    std::int64_t defaultFrameLimits[2] = {100, 33333};
-    ctrls.set(libcamera::controls::FrameDurationLimits, defaultFrameLimits);
+  }
+}
+
+void CameraStream::applyPendingExposureControls(libcamera::ControlList &ctrls) {
+  // 1. Apply EV compensation only when EV was modified
+  int evRem = m_evPendingCount.load();
+  while (evRem > 0 &&
+         !m_evPendingCount.compare_exchange_weak(evRem, evRem - 1)) {
+  }
+  if (evRem > 0) {
+    ctrls.set(libcamera::controls::ExposureValue, m_evCompensation.load());
   }
 
-  // Enable AE algorithm when either ISO or Shutter is in Auto mode
-  if (iso <= 0 || shutterUs <= 0) {
-    ctrls.set(libcamera::controls::AeEnable, true);
+  // 2. Apply ISO (AnalogueGain) only when ISO was modified
+  int isoRem = m_isoPendingCount.load();
+  while (isoRem > 0 &&
+         !m_isoPendingCount.compare_exchange_weak(isoRem, isoRem - 1)) {
+  }
+  if (isoRem > 0) {
+    const int iso = m_isoSetting.load();
+    if (iso > 0) {
+      float gain = static_cast<float>(iso) / 100.0f;
+      ctrls.set(libcamera::controls::AnalogueGain, gain);
+    } else {
+      ctrls.set(libcamera::controls::AnalogueGain, 0.0f);
+    }
+  }
+
+  // 3. Apply Shutter Speed (ExposureTime & FrameDurationLimits) only when
+  // shutter speed was modified
+  int shutterRem = m_shutterPendingCount.load();
+  while (shutterRem > 0 && !m_shutterPendingCount.compare_exchange_weak(
+                               shutterRem, shutterRem - 1)) {
+  }
+  if (shutterRem > 0) {
+    const int32_t shutterUs = m_shutterUsSetting.load();
+    if (shutterUs > 0) {
+      ctrls.set(libcamera::controls::ExposureTime, shutterUs);
+      int64_t minFrameDur =
+          shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 100;
+      int64_t maxFrameDur =
+          shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 33333;
+      std::int64_t frameDurationLimits[2] = {minFrameDur, maxFrameDur};
+      ctrls.set(libcamera::controls::FrameDurationLimits, frameDurationLimits);
+    } else {
+      ctrls.set(libcamera::controls::ExposureTime, 0);
+      std::int64_t defaultFrameLimits[2] = {100, 33333};
+      ctrls.set(libcamera::controls::FrameDurationLimits, defaultFrameLimits);
+    }
   }
 }
 
@@ -506,11 +547,8 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
     }
   }
 
-  // Apply exposure controls (EV, ISO/AnalogueGain, ShutterSpeed/ExposureTime)
-  // if updated by the user
-  if (m_exposureControlsDirty.exchange(false)) {
-    applyExposureControls(request->controls());
-  }
+  // Apply only the modified exposure controls across the request ring
+  applyPendingExposureControls(request->controls());
 
   m_camera->queueRequest(request);
 }
@@ -592,7 +630,7 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
                 startControls.set(libcamera::controls::LensPosition,
                                   m_lastLensPosition.load());
               }
-              applyExposureControls(startControls);
+              applyStartExposureControls(startControls);
 
               if (m_camera->start(&startControls) == 0) {
                 m_camera->queueRequest(req.get());
@@ -750,7 +788,7 @@ bool camera_stream_start(CameraStream *cam) {
     controlsList.set(libcamera::controls::AfMode,
                      libcamera::controls::AfModeContinuous);
   }
-  cam->applyExposureControls(controlsList);
+  cam->applyStartExposureControls(controlsList);
 
   int ret = cam->m_camera->start(&controlsList);
   if (ret < 0) {
@@ -857,7 +895,7 @@ bool camera_stream_set_ev(CameraStream *cam, float ev) {
     return false;
   float clamped = std::clamp(ev, -3.0f, 3.0f);
   cam->m_evCompensation = clamped;
-  cam->m_exposureControlsDirty = true;
+  cam->m_evPendingCount = 4;
   return true;
 }
 
@@ -865,8 +903,9 @@ bool camera_stream_set_iso(CameraStream *cam, int iso) {
   if (!cam)
     return false;
   int clamped = iso > 0 ? std::clamp(iso, 100, 3200) : 0;
-  cam->m_isoSetting = clamped;
-  cam->m_exposureControlsDirty = true;
+  if (cam->m_isoSetting.exchange(clamped) != clamped) {
+    cam->m_isoPendingCount = 4;
+  }
   return true;
 }
 
@@ -875,8 +914,9 @@ bool camera_stream_set_shutter_speed(CameraStream *cam,
   if (!cam)
     return false;
   int32_t clamped = exposure_time_us > 0 ? exposure_time_us : 0;
-  cam->m_shutterUsSetting = clamped;
-  cam->m_exposureControlsDirty = true;
+  if (cam->m_shutterUsSetting.exchange(clamped) != clamped) {
+    cam->m_shutterPendingCount = 4;
+  }
   return true;
 }
 
@@ -962,9 +1002,9 @@ bool camera_stream_capture_still(CameraStream *cam, const char *filename,
     int64_t waitMs =
         std::max<int64_t>(2000, cam->m_shutterUsSetting.load() / 1000 + 2000);
     std::unique_lock<std::mutex> lock(cam->m_stillMutex);
-    bool ready = cam->m_stillCv.wait_for(
-        lock, std::chrono::milliseconds(waitMs),
-        [&] { return cam->m_stillFrameReady; });
+    bool ready =
+        cam->m_stillCv.wait_for(lock, std::chrono::milliseconds(waitMs),
+                                [&] { return cam->m_stillFrameReady; });
     if (ready && !cam->m_stillFrame.empty()) {
       stillCopy = std::move(cam->m_stillFrame);
       cam->m_stillFrameReady = false;
