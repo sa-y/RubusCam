@@ -775,7 +775,7 @@ bool camera_stream_init(CameraStream *cam, int width, int height) {
   std::cout << "[-] カメラを検出しました: " << cam->m_camera->id() << std::endl;
   if (const auto modelProp =
           cam->m_camera->properties().get(libcamera::properties::Model)) {
-    cam->m_cameraModel = std::string("Raspberry Pi ") + *modelProp;
+    cam->m_cameraModel = std::string("Raspberry Pi ") + std::string(*modelProp);
     std::cout << "[-] センサーモデル: " << cam->m_cameraModel << std::endl;
   } else {
     cam->m_cameraModel = cam->m_camera->id();
