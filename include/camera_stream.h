@@ -76,6 +76,44 @@ bool camera_stream_get_latest_frame(CameraStream *cam, uint8_t *out_buffer,
                                     size_t buffer_size, uint64_t *out_sequence);
 
 /*
+ * Exposure status containing both user settings and actual metadata values.
+ */
+typedef struct CameraExposureStatus {
+  float ev_compensation;      /* User EV setting (-3.0f ~ +3.0f) */
+  int iso_setting;            /* User ISO setting (0 = Auto, 100 ~ 3200) */
+  int32_t shutter_us_setting; /* User shutter speed in us (0 = Auto) */
+  float actual_analogue_gain; /* Actual analogue gain reported by sensor */
+  int32_t actual_exposure_us; /* Actual exposure time in us reported by sensor */
+} CameraExposureStatus;
+
+/*
+ * Set exposure compensation in EV (-3.0f to +3.0f).
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_ev(CameraStream *cam, float ev);
+
+/*
+ * Set manual ISO sensitivity (0 = Auto, or 100, 200, 400, 800, 1600, 3200).
+ * Maps ISO 100 to AnalogueGain 1.0f.
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_iso(CameraStream *cam, int iso);
+
+/*
+ * Set manual shutter speed in microseconds (0 = Auto, >0 = manual exposure
+ * time). Automatically adjusts FrameDurationLimits for long exposures (>1/30s).
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_shutter_speed(CameraStream *cam,
+                                     int32_t exposure_time_us);
+
+/*
+ * Retrieve current exposure settings and actual sensor metadata values.
+ */
+void camera_stream_get_exposure_status(const CameraStream *cam,
+                                       CameraExposureStatus *out_status);
+
+/*
  * Trigger one-shot autofocus cycle (equivalent to 'F' key in pycamera).
  * Returns true if focused successfully, false otherwise.
  */

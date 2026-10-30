@@ -16,6 +16,25 @@
 
 static volatile sig_atomic_t g_running = 1;
 
+static const int ISO_PRESETS[] = {0, 100, 200, 400, 800, 1600, 3200};
+static const int ISO_PRESET_COUNT =
+    (int)(sizeof(ISO_PRESETS) / sizeof(ISO_PRESETS[0]));
+
+typedef struct ShutterPreset {
+  int32_t exposure_us;
+  const char *label;
+} ShutterPreset;
+
+static const ShutterPreset SHUTTER_PRESETS[] = {
+    {0, "Auto"},         {500, "1/2000s"},   {1000, "1/1000s"},
+    {2000, "1/500s"},    {4000, "1/250s"},   {8000, "1/125s"},
+    {16667, "1/60s"},    {33333, "1/30s"},   {66667, "1/15s"},
+    {125000, "1/8s"},    {250000, "1/4s"},   {500000, "1/2s"},
+    {1000000, "1.0s"},   {2000000, "2.0s"},
+};
+static const int SHUTTER_PRESET_COUNT =
+    (int)(sizeof(SHUTTER_PRESETS) / sizeof(SHUTTER_PRESETS[0]));
+
 static void signal_handler(int signum) {
   (void)signum;
   printf("\n[-] 割り込みを検知しました。\n");
@@ -210,11 +229,15 @@ int main(int argc, char *argv[]) {
   }
 
   printf("=========================================\n");
-  printf(" [Space] : 写真を撮影して保存\n");
+  printf(" [Space]        : 写真を撮影して保存\n");
   if (camera_stream_is_af_supported(camera)) {
-    printf(" [F]     : オートフォーカス再調整 (ワンショットAF)\n");
+    printf(" [F]            : オートフォーカス再調整 (ワンショットAF)\n");
   }
-  printf(" [Q]     : アプリを終了\n");
+  printf(" [Up/Down, [/]] : 露出補正 (EV -3.0 ~ +3.0, 1/3ステップ)\n");
+  printf(" [I / Shift+I]  : ISO感度切替 (Auto / 100 ~ 3200)\n");
+  printf(" [S / Left/Rgt] : シャッター速度切替 (Auto / 1/2000s ~ 2.0s)\n");
+  printf(" [R]            : 露出設定をすべてAuto/0.0EVにリセット\n");
+  printf(" [Q]            : アプリを終了\n");
   printf("=========================================\n");
 
   size_t frame_size = camera_stream_get_frame_size(camera);
@@ -260,6 +283,11 @@ int main(int argc, char *argv[]) {
 
   const uint32_t target_frame_time_ms = 1000 / 30; // ~30 FPS
 
+  // Exposure control state indices
+  int ev_step_index = 0; // -9 (-3.0 EV) to +9 (+3.0 EV) in 1/3 EV increments
+  int iso_preset_index = 0;
+  int shutter_preset_index = 0;
+
   // 3. Main event & GPU rendering loop
   while (g_running) {
     uint32_t frame_start = SDL_GetTicks();
@@ -270,6 +298,8 @@ int main(int argc, char *argv[]) {
       if (event.type == SDL_QUIT) {
         g_running = 0;
       } else if (event.type == SDL_KEYDOWN) {
+        bool shift_held = (event.key.keysym.mod & KMOD_SHIFT) != 0;
+
         switch (event.key.keysym.sym) {
         case SDLK_q:
           // Quit on 'Q' key
@@ -282,6 +312,85 @@ int main(int argc, char *argv[]) {
             camera_stream_trigger_af(camera);
           }
           break;
+
+        case SDLK_UP:
+        case SDLK_RIGHTBRACKET: {
+          if (ev_step_index < 9) {
+            ev_step_index++;
+            float ev = (float)ev_step_index / 3.0f;
+            camera_stream_set_ev(camera, ev);
+            printf("[-] 露出補正 (EV): %+.2f EV\n", ev);
+          }
+          break;
+        }
+
+        case SDLK_DOWN:
+        case SDLK_LEFTBRACKET: {
+          if (ev_step_index > -9) {
+            ev_step_index--;
+            float ev = (float)ev_step_index / 3.0f;
+            camera_stream_set_ev(camera, ev);
+            printf("[-] 露出補正 (EV): %+.2f EV\n", ev);
+          }
+          break;
+        }
+
+        case SDLK_i: {
+          if (shift_held) {
+            iso_preset_index =
+                (iso_preset_index - 1 + ISO_PRESET_COUNT) % ISO_PRESET_COUNT;
+          } else {
+            iso_preset_index = (iso_preset_index + 1) % ISO_PRESET_COUNT;
+          }
+          int iso = ISO_PRESETS[iso_preset_index];
+          camera_stream_set_iso(camera, iso);
+          if (iso == 0) {
+            printf("[-] ISO感度: Auto\n");
+          } else {
+            printf("[-] ISO感度: %d (手動)\n", iso);
+          }
+          break;
+        }
+
+        case SDLK_s:
+        case SDLK_RIGHT: {
+          if (event.key.keysym.sym == SDLK_s && shift_held) {
+            shutter_preset_index =
+                (shutter_preset_index - 1 + SHUTTER_PRESET_COUNT) %
+                SHUTTER_PRESET_COUNT;
+          } else {
+            shutter_preset_index =
+                (shutter_preset_index + 1) % SHUTTER_PRESET_COUNT;
+          }
+          int32_t shutter_us = SHUTTER_PRESETS[shutter_preset_index].exposure_us;
+          camera_stream_set_shutter_speed(camera, shutter_us);
+          printf("[-] シャッタースピード: %s\n",
+                 SHUTTER_PRESETS[shutter_preset_index].label);
+          break;
+        }
+
+        case SDLK_LEFT: {
+          shutter_preset_index =
+              (shutter_preset_index - 1 + SHUTTER_PRESET_COUNT) %
+              SHUTTER_PRESET_COUNT;
+          int32_t shutter_us = SHUTTER_PRESETS[shutter_preset_index].exposure_us;
+          camera_stream_set_shutter_speed(camera, shutter_us);
+          printf("[-] シャッタースピード: %s\n",
+                 SHUTTER_PRESETS[shutter_preset_index].label);
+          break;
+        }
+
+        case SDLK_r: {
+          ev_step_index = 0;
+          iso_preset_index = 0;
+          shutter_preset_index = 0;
+          camera_stream_set_ev(camera, 0.0f);
+          camera_stream_set_iso(camera, 0);
+          camera_stream_set_shutter_speed(camera, 0);
+          printf("[-] 露出設定をリセットしました (EV: 0.0, ISO: Auto, SS: "
+                 "Auto)\n");
+          break;
+        }
 
         case SDLK_SPACE: {
           // Capture high-resolution still image on 'Space' key using DCF file
@@ -325,8 +434,13 @@ int main(int argc, char *argv[]) {
 
     SDL_RenderCopy(renderer, camera_texture, NULL, &viewport_rect);
 
-    // 6. Draw overlay guide text via SDL2_ttf
+    // 6. Draw overlay guide text & exposure HUD via SDL2_ttf
     text_renderer_draw_guide(renderer, camera_stream_is_af_supported(camera));
+
+    CameraExposureStatus exp_status;
+    camera_stream_get_exposure_status(camera, &exp_status);
+    text_renderer_draw_exposure_hud(renderer, cur_win_w, cur_win_h,
+                                    &exp_status);
 
     // 7. Present frame to physical display
     SDL_RenderPresent(renderer);
