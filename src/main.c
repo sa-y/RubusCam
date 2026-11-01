@@ -87,7 +87,6 @@ static const int METERING_PRESET_COUNT =
 
 static void signal_handler(int signum) {
   (void)signum;
-  printf("\n[-] 割り込みを検知しました。\n");
   g_running = 0;
 }
 
@@ -131,8 +130,8 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
   SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
       (void *)src_data, width, height, 24, effective_stride, format);
   if (!surface) {
-    fprintf(stderr, "[エラー] JPEG保存用サーフェスの作成に失敗しました: %s\n",
-            SDL_GetError());
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: JPEG保存用サーフェスの作成に失敗しました : %s",
+                 __FILE__, __LINE__, SDL_GetError());
     return false;
   }
 
@@ -142,6 +141,8 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
   if (ret != 0) {
     fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
             IMG_GetError());
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: IMG_SaveJPG による保存に失敗しました: %s",
+                 __FILE__, __LINE__, SDL_GetError());
   } else {
     CameraExposureStatus exp_status;
     memset(&exp_status, 0, sizeof(exp_status));
@@ -167,16 +168,43 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
 }
 
 int main(int argc, char *argv[]) {
+
+  SDL_LogPriority log_priority = SDL_LOG_PRIORITY_INFO;
   DcfDirMode dcf_mode = DCF_DIR_MODE_STANDARD;
+
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--date-dir") == 0) {
       dcf_mode = DCF_DIR_MODE_DATE;
+    } else if (strcmp(argv[i], "--debug") == 0) {
+      log_priority = SDL_LOG_PRIORITY_DEBUG;
+    } else if (strcmp(argv[i], "--verbose") == 0) {
+      log_priority = SDL_LOG_PRIORITY_VERBOSE;
     }
   }
 
-  // Set up signal handler for clean interrupt (Ctrl+C)
-  signal(SIGINT, signal_handler);
-  signal(SIGTERM, signal_handler);
+  SDL_LogSetPriority(SDL_LOG_CATEGORY_APPLICATION, log_priority);
+
+  // 1. Initialize SDL2, SDL2_image & SDL2_ttf
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: SDL_Init() fail : %s",
+                 __FILE__, __LINE__, SDL_GetError());
+    exit(1);
+  }
+  atexit(SDL_Quit);
+
+  if ((IMG_Init(IMG_INIT_JPG) & IMG_INIT_JPG) != IMG_INIT_JPG) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: IMG_Init() fail : %s",
+                 __FILE__, __LINE__, IMG_GetError());
+    exit(2);
+  }
+  atexit(IMG_Quit);
+
+  if (TTF_Init() < 0) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: TTF_Init() fail : %s",
+                 __FILE__, __LINE__, TTF_GetError());
+    exit(3);
+  }
+  atexit(TTF_Quit);
 
   // Initialize DCF storage manager (DCIM/100_PICA/IMG_0001.JPG or
   // DCIM/YYYYMMDD/IMG_0001.JPG)
@@ -190,65 +218,46 @@ int main(int argc, char *argv[]) {
                                              : "DCIM/YYYYMMDD");
   }
 
-  // 1. Initialize SDL2, SDL2_image & SDL2_ttf
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
-    fprintf(stderr, "[エラー] SDL2 の初期化に失敗しました: %s\n",
-            SDL_GetError());
-    return 1;
-  }
-
-  if ((IMG_Init(IMG_INIT_JPG) & IMG_INIT_JPG) != IMG_INIT_JPG) {
-    fprintf(stderr, "[エラー] SDL2_image (JPG) の初期化に失敗しました: %s\n",
-            IMG_GetError());
-    SDL_Quit();
-    return 1;
-  }
-
-  if (TTF_Init() < 0) {
-    fprintf(stderr, "[エラー] SDL2_ttf の初期化に失敗しました: %s\n",
-            TTF_GetError());
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
-  }
-
   const int screen_width = 1024;
   const int screen_height = 600;
 
   SDL_Window *window = SDL_CreateWindow(
-      "Raspberry Pi V3 Pygame Camera (C Version - SDL2)",
-      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, screen_width,
+      "RubusCam", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, screen_width,
       screen_height,
       SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if (!window) {
-    fprintf(stderr, "[エラー] ウィンドウの作成に失敗しました: %s\n",
-            SDL_GetError());
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "%s: %d: SDL_CreateWindow() fail : %s", __FILE__, __LINE__,
+                 SDL_GetError());
+    exit(4);
   }
+
+  int cur_win_w = screen_width;
+  int cur_win_h = screen_height;
+  SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
 
   // Attempt hardware accelerated renderer with VSync, fallback to default if
   // failed
   SDL_Renderer *renderer = SDL_CreateRenderer(
       window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   if (!renderer) {
-    printf("[警告] "
-           "ハードウェアアクセラレータ作成失敗、デフォルトレンダラーを使用しま"
-           "す: %s\n",
-           SDL_GetError());
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "%s: %d: SDL_CreateRenderer() fail : %s", __FILE__, __LINE__,
+                SDL_GetError());
+    SDL_LogWarn(
+        SDL_LOG_CATEGORY_APPLICATION,
+        "%s: %d: "
+        "ハードウェアアクセラレータ作成失敗、デフォルトレンダラーを使用します",
+        __FILE__, __LINE__);
     renderer = SDL_CreateRenderer(window, -1, 0);
   }
 
   if (!renderer) {
-    fprintf(stderr, "[エラー] レンダラーの作成に失敗しました: %s\n",
-            SDL_GetError());
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "%s: %d: レンダラーの作成に失敗しました : %s", __FILE__,
+                 __LINE__, SDL_GetError());
     SDL_DestroyWindow(window);
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    exit(5);
   }
 
   // Initialize text renderer using SDL2_ttf
@@ -257,7 +266,9 @@ int main(int argc, char *argv[]) {
   // Hide mouse cursor (convenient for console environments)
   SDL_ShowCursor(SDL_DISABLE);
 
-  printf("[-] SDL2 / SDL2_image / SDL2_ttf を初期化しました。\n");
+  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+              "%s: %d: SDL2 / SDL2_image /SDL2_ttf を初期化しました。",
+              __FILE__, __LINE__);
 
   // 2. Initialize CameraStream (libcamera via C wrapper)
   CameraStream *camera = camera_stream_create();
@@ -267,22 +278,16 @@ int main(int argc, char *argv[]) {
     text_renderer_destroy();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    exit(6);
   }
 
-  if (!camera_stream_init(camera, screen_width, screen_height)) {
+  if (!camera_stream_init(camera, cur_win_w, cur_win_h)) {
     fprintf(stderr, "[エラー] カメラの初期化に失敗しました。\n");
     camera_stream_destroy(camera);
     text_renderer_destroy();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    exit(7);
   }
 
   if (!camera_stream_start(camera)) {
@@ -291,10 +296,7 @@ int main(int argc, char *argv[]) {
     text_renderer_destroy();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    exit(8);
   }
 
   printf("=========================================\n");
@@ -331,10 +333,7 @@ int main(int argc, char *argv[]) {
     text_renderer_destroy();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    exit(9);
   }
 
   uint64_t frame_seq = 0;
@@ -390,6 +389,10 @@ int main(int argc, char *argv[]) {
   g_active_playback = &playback_mgr;
   g_active_renderer = renderer;
   g_active_camera = camera;
+
+  // Set up signal handler for clean interrupt (Ctrl+C)
+  signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
 
   // 3. Main event & GPU rendering loop
   while (g_running) {
@@ -661,8 +664,6 @@ int main(int argc, char *argv[]) {
     // Update playback/quick-review timers
     playback_manager_update(&playback_mgr, renderer);
 
-    int cur_win_w = screen_width;
-    int cur_win_h = screen_height;
     SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
 
     if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
@@ -719,9 +720,13 @@ int main(int argc, char *argv[]) {
   }
 
   // 9. Cleanup resources
-  printf("[-] 終了処理を実行中...\n");
+  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+              "%s: %d: 終了処理を実行中...",
+              __FILE__, __LINE__);
   if (async_save_queue_get_pending_count(&save_queue) > 0) {
-    printf("[-] バックグラウンド保存キューの完了を待機中...\n");
+	SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "%s: %d: バックグラウンド保存キューの完了を待機中...",
+                __FILE__, __LINE__);
     async_save_queue_wait_idle(&save_queue);
   }
   async_save_queue_destroy(&save_queue);
@@ -745,10 +750,10 @@ int main(int argc, char *argv[]) {
     SDL_DestroyWindow(window);
   }
 
-  TTF_Quit();
-  IMG_Quit();
-  SDL_Quit();
-  printf("[-] アプリケーションを安全に終了しました。\n");
+  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+              "%s: %d: アプリケーションを終了します。",
+              __FILE__, __LINE__);
 
+  exit(0);
   return 0;
 }
