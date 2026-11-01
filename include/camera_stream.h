@@ -95,7 +95,7 @@ typedef enum CameraWbMode {
   CAMERA_WB_MODE_SHADE = 3,       /* Shade (~7500K) */
   CAMERA_WB_MODE_TUNGSTEN = 4,    /* Tungsten / Incandescent (~2800K) */
   CAMERA_WB_MODE_FLUORESCENT = 5, /* Fluorescent (~4000K) */
-  CAMERA_WB_MODE_KELVIN = 6       /* Manual Color Temperature (2500K ~ 10000K) */
+  CAMERA_WB_MODE_KELVIN = 6 /* Manual Color Temperature (2500K ~ 10000K) */
 } CameraWbMode;
 
 /*
@@ -116,13 +116,15 @@ typedef struct CameraExposureStatus {
   int iso_setting;            /* User ISO setting (0 = Auto, 100 ~ 3200) */
   int32_t shutter_us_setting; /* User shutter speed in us (0 = Auto) */
   float actual_analogue_gain; /* Actual analogue gain reported by sensor */
-  int32_t actual_exposure_us; /* Actual exposure time in us reported by sensor */
-  CameraWbMode wb_mode;       /* User WB mode setting */
-  int wb_kelvin_setting;      /* User manual color temperature in K (2500 ~ 10000) */
-  bool awb_locked;            /* True if AWB is locked at current color gains */
-  int32_t actual_colour_temp_k; /* Actual color temperature in K from metadata */
-  float actual_red_gain;      /* Actual red color gain from metadata */
-  float actual_blue_gain;     /* Actual blue color gain from metadata */
+  int32_t
+      actual_exposure_us; /* Actual exposure time in us reported by sensor */
+  CameraWbMode wb_mode;   /* User WB mode setting */
+  int wb_kelvin_setting; /* User manual color temperature in K (2500 ~ 10000) */
+  bool awb_locked;       /* True if AWB is locked at current color gains */
+  int32_t
+      actual_colour_temp_k; /* Actual color temperature in K from metadata */
+  float actual_red_gain;    /* Actual red color gain from metadata */
+  float actual_blue_gain;   /* Actual blue color gain from metadata */
   CameraMeteringMode metering_mode; /* User AE metering mode setting */
 } CameraExposureStatus;
 
@@ -214,7 +216,8 @@ typedef struct CameraCapturedStill {
   int width;
   int height;
   int stride;
-  bool is_bgr; /* True if memory byte order is [B, G, R] (SDL_PIXELFORMAT_BGR24) */
+  bool is_bgr; /* True if memory byte order is [B, G, R] (SDL_PIXELFORMAT_BGR24)
+                */
   CameraExposureStatus exp_status;
 } CameraCapturedStill;
 

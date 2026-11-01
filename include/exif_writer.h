@@ -20,21 +20,23 @@ extern "C" {
  * Exif 2.3 metadata fields to embed into a captured JPEG file.
  */
 typedef struct ExifMetadata {
-  char make[64];         /* Camera manufacturer, e.g. "Raspberry Pi" */
-  char model[64];        /* Camera sensor/model name, e.g. "RP_imx708" */
-  char software[64];     /* Application name, e.g. "RubusCam" */
-  char datetime_str[20]; /* Capture timestamp "YYYY:MM:DD HH:MM:SS" */
-  int width;             /* Image width in pixels */
-  int height;            /* Image height in pixels */
-  int32_t exposure_us;   /* Exposure time in microseconds */
-  int iso_value;         /* ISO sensitivity (e.g. 100 .. 3200) */
-  float ev_bias;         /* Exposure compensation in EV (-3.0 .. +3.0) */
-  float f_number;        /* Lens aperture F-number (e.g. 1.8) */
-  float focal_length_mm; /* Lens focal length in mm (e.g. 4.74) */
-  uint16_t metering_mode; /* Exif MeteringMode (0x9207): 2=Center, 3=Spot, 5=Pattern */
-  uint16_t light_source; /* Exif LightSource (0x9208): 0=Unknown, 1=Daylight, etc. */
-  uint16_t wb_mode;      /* White balance mode: 0 = Auto, 1 = Manual */
-  uint16_t exp_mode;     /* Exposure mode: 0 = Auto, 1 = Manual */
+  char make[64];          /* Camera manufacturer, e.g. "Raspberry Pi" */
+  char model[64];         /* Camera sensor/model name, e.g. "RP_imx708" */
+  char software[64];      /* Application name, e.g. "RubusCam" */
+  char datetime_str[20];  /* Capture timestamp "YYYY:MM:DD HH:MM:SS" */
+  int width;              /* Image width in pixels */
+  int height;             /* Image height in pixels */
+  int32_t exposure_us;    /* Exposure time in microseconds */
+  int iso_value;          /* ISO sensitivity (e.g. 100 .. 3200) */
+  float ev_bias;          /* Exposure compensation in EV (-3.0 .. +3.0) */
+  float f_number;         /* Lens aperture F-number (e.g. 1.8) */
+  float focal_length_mm;  /* Lens focal length in mm (e.g. 4.74) */
+  uint16_t metering_mode; /* Exif MeteringMode (0x9207): 2=Center, 3=Spot,
+                             5=Pattern */
+  uint16_t
+      light_source; /* Exif LightSource (0x9208): 0=Unknown, 1=Daylight, etc. */
+  uint16_t wb_mode; /* White balance mode: 0 = Auto, 1 = Manual */
+  uint16_t exp_mode; /* Exposure mode: 0 = Auto, 1 = Manual */
 } ExifMetadata;
 
 /*
@@ -71,4 +73,3 @@ bool exif_inject_into_jpeg_file(const char *filepath, const ExifMetadata *meta);
 #endif
 
 #endif /* EXIF_WRITER_H */
-

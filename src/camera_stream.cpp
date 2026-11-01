@@ -67,10 +67,10 @@ struct CameraStream {
   int m_width = 480;
   int m_height = 320;
   int m_stride = 0;
-  // True when pixel bytes in memory are ordered [B, G, R] (SDL_PIXELFORMAT_BGR24).
-  // Note: libcamera/DRM pixel format names follow little-endian 24-bit word
-  // conventions where `formats::RGB888` stores [B, G, R] in memory and
-  // `formats::BGR888` stores [R, G, B] in memory.
+  // True when pixel bytes in memory are ordered [B, G, R]
+  // (SDL_PIXELFORMAT_BGR24). Note: libcamera/DRM pixel format names follow
+  // little-endian 24-bit word conventions where `formats::RGB888` stores [B, G,
+  // R] in memory and `formats::BGR888` stores [R, G, B] in memory.
   bool m_memoryOrderIsBGR = false;
 
   // High-resolution still stream properties (0 = auto sensor maximum)
@@ -589,9 +589,8 @@ bool CameraStream::configureDualOrSingleStream() {
   // Step 2: Try Dual-Stream Configuration ({ StillCapture, Viewfinder })
   // Note: On Raspberry Pi ISP (vc4/pisp), the higher-resolution stream must be
   // Output 0.
-  bool canTryDual =
-      (targetStillW >= targetVfW && targetStillH >= targetVfH) &&
-      (targetStillW > targetVfW || targetStillH > targetVfH);
+  bool canTryDual = (targetStillW >= targetVfW && targetStillH >= targetVfH) &&
+                    (targetStillW > targetVfW || targetStillH > targetVfH);
 
   if (canTryDual) {
     auto dualConfig =
@@ -711,8 +710,7 @@ bool CameraStream::configureDualOrSingleStream() {
   // DRM/libcamera formats::RGB888 stores bytes in memory as [B, G, R]
   // (SDL_PIXELFORMAT_BGR24); formats::BGR888 stores bytes as [R, G, B]
   // (SDL_PIXELFORMAT_RGB24).
-  m_memoryOrderIsBGR =
-      (streamConfig.pixelFormat == libcamera::formats::RGB888);
+  m_memoryOrderIsBGR = (streamConfig.pixelFormat == libcamera::formats::RGB888);
   m_width = streamConfig.size.width;
   m_height = streamConfig.size.height;
   m_stride = streamConfig.stride;
@@ -1286,9 +1284,9 @@ bool camera_stream_set_shutter_speed(CameraStream *cam,
 bool camera_stream_set_wb_mode(CameraStream *cam, CameraWbMode mode) {
   if (!cam)
     return false;
-  int clamped = std::clamp(static_cast<int>(mode),
-                           static_cast<int>(CAMERA_WB_MODE_AUTO),
-                           static_cast<int>(CAMERA_WB_MODE_KELVIN));
+  int clamped =
+      std::clamp(static_cast<int>(mode), static_cast<int>(CAMERA_WB_MODE_AUTO),
+                 static_cast<int>(CAMERA_WB_MODE_KELVIN));
   cam->m_awbLocked = false;
   cam->m_wbMode = clamped;
   cam->m_wbPendingCount = 4;
@@ -1554,72 +1552,70 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
   CameraExposureStatus expStatus{};
   bool ready = false;
 
-  {
-    std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-    if (cam->m_stillFrameReady && !cam->m_stillFrame.empty()) {
-      localBuf = std::move(cam->m_stillFrame);
-      cam->m_stillFrameReady = false;
-      width = cam->m_capturedStillWidth;
-      height = cam->m_capturedStillHeight;
-      stride = cam->m_capturedStillStride;
-      isBGR = cam->m_capturedStillMemoryOrderIsBGR;
-      expStatus = cam->m_capturedStillExpStatus;
-      ready = true;
-    }
+  std::lock_guard<std::mutex> lock(cam->m_stillMutex);
+  if (cam->m_stillFrameReady && !cam->m_stillFrame.empty()) {
+    localBuf = std::move(cam->m_stillFrame);
+    cam->m_stillFrameReady = false;
+    width = cam->m_capturedStillWidth;
+    height = cam->m_capturedStillHeight;
+    stride = cam->m_capturedStillStride;
+    isBGR = cam->m_capturedStillMemoryOrderIsBGR;
+    expStatus = cam->m_capturedStillExpStatus;
+    ready = true;
+  }
+}
+
+if (!ready) {
+  // Check if dual-stream capture timed out; if so, fall back to mode-switch
+  int64_t timeoutMs =
+      std::max<int64_t>(2000, cam->m_shutterUsSetting.load() / 1000 + 2000);
+  auto elapsedMs =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - cam->m_asyncStillStartTime)
+          .count();
+  if (elapsedMs < timeoutMs) {
+    return false;
   }
 
-  if (!ready) {
-    // Check if dual-stream capture timed out; if so, fall back to mode-switch
-    int64_t timeoutMs =
-        std::max<int64_t>(2000, cam->m_shutterUsSetting.load() / 1000 + 2000);
-    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::steady_clock::now() -
-                         cam->m_asyncStillStartTime)
-                         .count();
-    if (elapsedMs < timeoutMs) {
-      return false;
-    }
-
-    cam->m_stillCapturePending = false;
-    std::cerr << "[警告] 非同期マルチストリーム取得がタイムアウトしました。"
-                 "モード切替キャプチャへフォールバックします。"
-              << std::endl;
-    if (!cam->captureStillByModeSwitch(localBuf, width, height, stride,
-                                       isBGR)) {
-      std::lock_guard<std::mutex> lock(cam->m_frameMutex);
-      localBuf = cam->m_latestFrame;
-      width = cam->m_width;
-      height = cam->m_height;
-      stride = cam->m_stride;
-      isBGR = cam->m_memoryOrderIsBGR;
-    }
-    camera_stream_get_exposure_status(cam, &expStatus);
-    if (localBuf.empty()) {
-      cam->m_asyncStillInFlight = false;
-      return false;
-    }
+  cam->m_stillCapturePending = false;
+  std::cerr << "[警告] 非同期マルチストリーム取得がタイムアウトしました。"
+               "モード切替キャプチャへフォールバックします。"
+            << std::endl;
+  if (!cam->captureStillByModeSwitch(localBuf, width, height, stride, isBGR)) {
+    std::lock_guard<std::mutex> lock(cam->m_frameMutex);
+    localBuf = cam->m_latestFrame;
+    width = cam->m_width;
+    height = cam->m_height;
+    stride = cam->m_stride;
+    isBGR = cam->m_memoryOrderIsBGR;
   }
-
-  uint8_t *heapBuf = static_cast<uint8_t *>(std::malloc(localBuf.size()));
-  if (!heapBuf) {
+  camera_stream_get_exposure_status(cam, &expStatus);
+  if (localBuf.empty()) {
     cam->m_asyncStillInFlight = false;
     return false;
   }
-  std::memcpy(heapBuf, localBuf.data(), localBuf.size());
+}
 
-  out_still->data = heapBuf;
-  out_still->size = localBuf.size();
-  out_still->width = width;
-  out_still->height = height;
-  out_still->stride = stride;
-  out_still->is_bgr = isBGR;
-  out_still->exp_status = expStatus;
-
+uint8_t *heapBuf = static_cast<uint8_t *>(std::malloc(localBuf.size()));
+if (!heapBuf) {
   cam->m_asyncStillInFlight = false;
-  if (cam->m_afSupported) {
-    cam->m_afContinuousPending = true;
-  }
-  return true;
+  return false;
+}
+std::memcpy(heapBuf, localBuf.data(), localBuf.size());
+
+out_still->data = heapBuf;
+out_still->size = localBuf.size();
+out_still->width = width;
+out_still->height = height;
+out_still->stride = stride;
+out_still->is_bgr = isBGR;
+out_still->exp_status = expStatus;
+
+cam->m_asyncStillInFlight = false;
+if (cam->m_afSupported) {
+  cam->m_afContinuousPending = true;
+}
+return true;
 }
 
 } // extern "C"

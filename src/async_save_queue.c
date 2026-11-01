@@ -135,7 +135,8 @@ static void *save_worker_thread_main(void *arg) {
     q->active_protect = job.protect_after_save;
     pthread_mutex_unlock(&q->mutex);
 
-    /* Perform heavy JPEG encoding + Exif APP1 injection + SD write outside lock */
+    /* Perform heavy JPEG encoding + Exif APP1 injection + SD write outside lock
+     */
     bool saved = encode_and_save_job(&job);
     free(job.raw_data);
     job.raw_data = NULL;
@@ -385,4 +386,3 @@ bool async_save_queue_set_protected(AsyncSaveQueue *q, const char *filepath,
   /* 3. Already on disk */
   return dcf_storage_set_protected(filepath, protect);
 }
-

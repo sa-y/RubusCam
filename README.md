@@ -144,9 +144,7 @@ RubusCam/
 │   ├── camera_stream.h        # libcamera ラッパー関数の C 向け公開ヘッダー (extern "C")
 │   ├── dcf_storage.h          # DCF 準拠ディレクトリ・連番ファイル管理・残容量確認・メディア走査ヘッダー
 │   ├── exif_writer.h          # Exif 2.3 (APP1) セグメント生成・JPEG 注入ヘッダー
-│   ├── font8x16.h             # 8x16 ビットマップフォント定義ヘッダー
 │   ├── playback_manager.h     # クイックレビュー・再生ギャラリー・ズーム/グリッド/削除管理ヘッダー
-│   ├── stb_image_write.h      # 画像書き出し用ヘッダーライブラリ
 │   └── text_renderer.h        # SDL2_ttf 用テキスト・HUD・パネル描画関数宣言
 └── src/
     ├── main.c                 # アプリケーションエントリポイント & SDL2 イベント/レンダリングループ (C言語)
@@ -154,7 +152,6 @@ RubusCam/
     ├── camera_stream.cpp      # libcamera 制御実装 & extern "C" ラッパー関数群 (C++)
     ├── dcf_storage.c          # DCF フォルダ自動生成・連番採番・statvfs 残容量チェック・ファイル削除/保護実装 (C言語)
     ├── exif_writer.c          # TIFF IFD / Exif 2.3 バイナリ構築 & アトミック保存実装 (C言語)
-    ├── font8x16.c             # 8x16 ビットマップフォントデータ (C言語)
     ├── playback_manager.c     # 再生モード・クイックレビュー・Exif パーサ・サムネイル一覧実装 (C言語)
     └── text_renderer.c        # SDL2_ttf ガイド・露出 HUD オーバーレイ描画実装 (C言語)
 ```

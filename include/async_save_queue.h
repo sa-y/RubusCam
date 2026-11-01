@@ -111,4 +111,3 @@ bool async_save_queue_set_protected(AsyncSaveQueue *q, const char *filepath,
 #endif
 
 #endif /* ASYNC_SAVE_QUEUE_H */
-

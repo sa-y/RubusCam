@@ -75,7 +75,8 @@ void dcf_storage_resync(DcfStorage *dcf);
  * Metadata entry for a single captured media file in DCIM storage.
  */
 typedef struct {
-  char filepath[512];     /* Full relative path, e.g. "DCIM/100_PICA/IMG_0001.JPG" */
+  char
+      filepath[512]; /* Full relative path, e.g. "DCIM/100_PICA/IMG_0001.JPG" */
   char display_name[512]; /* Short display name, e.g. "100_PICA/IMG_0001.JPG" */
   char filename[256];     /* Base file name, e.g. "IMG_0001.JPG" */
   uint64_t file_size;     /* File size in bytes */
@@ -84,7 +85,8 @@ typedef struct {
 } DcfMediaEntry;
 
 /*
- * Dynamic array of scanned DCF media entries, sorted in chronological/DCF order.
+ * Dynamic array of scanned DCF media entries, sorted in chronological/DCF
+ * order.
  */
 typedef struct {
   DcfMediaEntry *entries;

@@ -136,8 +136,10 @@ void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported) {
 
   const char *guide_text =
       af_supported
-          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB [K]:Temp [L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit"
-          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB [K]:Temp [L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit";
+          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB "
+            "[K]:Temp [L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit"
+          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB [K]:Temp "
+            "[L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit";
 
   // Lazily create and cache guide text texture on GPU
   if (!*tex_slot && g_font) {
@@ -219,8 +221,9 @@ void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
     snprintf(iso_str, sizeof(iso_str), "ISO: Auto (%d)", actual_iso);
   }
 
-  const char *q_str =
-      (quality_label && quality_label[0] != '\0') ? quality_label : "Fine (90%)";
+  const char *q_str = (quality_label && quality_label[0] != '\0')
+                          ? quality_label
+                          : "Fine (90%)";
 
   char wb_str[64];
   int quant_k = status->actual_colour_temp_k > 0
@@ -246,7 +249,8 @@ void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
       snprintf(wb_str, sizeof(wb_str), "WB: Fluoresc");
       break;
     case CAMERA_WB_MODE_KELVIN: {
-      int k_val = status->wb_kelvin_setting > 0 ? status->wb_kelvin_setting : 5500;
+      int k_val =
+          status->wb_kelvin_setting > 0 ? status->wb_kelvin_setting : 5500;
       snprintf(wb_str, sizeof(wb_str), "WB: %dK [M]", k_val);
       break;
     }

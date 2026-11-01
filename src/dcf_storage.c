@@ -76,8 +76,9 @@ static void get_current_date_str(char *out_buf, size_t buf_size) {
 }
 
 /*
- * Parse a DCF file name matching "<prefix><4-digit-number>.JPG" (case-insensitive).
- * Returns the 1..9999 file number if matched, or -1 otherwise.
+ * Parse a DCF file name matching "<prefix><4-digit-number>.JPG"
+ * (case-insensitive). Returns the 1..9999 file number if matched, or -1
+ * otherwise.
  */
 static int parse_dcf_filename(const char *name, const char *prefix) {
   size_t prefix_len = strlen(prefix);
@@ -105,10 +106,8 @@ static int parse_dcf_filename(const char *name, const char *prefix) {
        toupper((unsigned char)ext[2]) == 'P' &&
        toupper((unsigned char)ext[3]) == 'E' &&
        toupper((unsigned char)ext[4]) == 'G' && ext[5] == '\0')) {
-    int num = (digits[0] - '0') * 1000 +
-              (digits[1] - '0') * 100 +
-              (digits[2] - '0') * 10 +
-              (digits[3] - '0');
+    int num = (digits[0] - '0') * 1000 + (digits[1] - '0') * 100 +
+              (digits[2] - '0') * 10 + (digits[3] - '0');
     if (num >= DCF_FILE_MIN && num <= DCF_FILE_MAX) {
       return num;
     }
@@ -118,15 +117,15 @@ static int parse_dcf_filename(const char *name, const char *prefix) {
 }
 
 /*
- * Parse a DCF standard directory name matching "<3-digit-number><5-char-suffix>".
- * Returns the 100..999 directory number if matched, or -1 otherwise.
+ * Parse a DCF standard directory name matching
+ * "<3-digit-number><5-char-suffix>". Returns the 100..999 directory number if
+ * matched, or -1 otherwise.
  */
 static int parse_dcf_dirname(const char *name, const char *suffix) {
   if (strlen(name) != 8) {
     return -1;
   }
-  if (!isdigit((unsigned char)name[0]) ||
-      !isdigit((unsigned char)name[1]) ||
+  if (!isdigit((unsigned char)name[0]) || !isdigit((unsigned char)name[1]) ||
       !isdigit((unsigned char)name[2])) {
     return -1;
   }
@@ -134,9 +133,7 @@ static int parse_dcf_dirname(const char *name, const char *suffix) {
     return -1;
   }
 
-  int dir_num = (name[0] - '0') * 100 +
-                (name[1] - '0') * 10 +
-                (name[2] - '0');
+  int dir_num = (name[0] - '0') * 100 + (name[1] - '0') * 10 + (name[2] - '0');
   if (dir_num >= DCF_DIR_MIN && dir_num <= DCF_DIR_MAX) {
     return dir_num;
   }
@@ -144,7 +141,8 @@ static int parse_dcf_dirname(const char *name, const char *suffix) {
 }
 
 /*
- * Scan a directory for the highest existing DCF file number (IMG_0001..IMG_9999).
+ * Scan a directory for the highest existing DCF file number
+ * (IMG_0001..IMG_9999).
  */
 static int scan_max_file_number(const char *dir_path, const char *file_prefix) {
   int max_num = 0;
@@ -207,19 +205,22 @@ bool dcf_storage_init(DcfStorage *dcf, const char *base_path, DcfDirMode mode) {
 
   if (is_directory(dcf->base_path)) {
     if (dcf->mode == DCF_DIR_MODE_STANDARD) {
-      dcf->current_dir_num = scan_max_dir_number(dcf->base_path, dcf->dir_suffix);
+      dcf->current_dir_num =
+          scan_max_dir_number(dcf->base_path, dcf->dir_suffix);
       char active_dir[512];
-      snprintf(active_dir, sizeof(active_dir), "%s/%03d%s",
-               dcf->base_path, dcf->current_dir_num, dcf->dir_suffix);
+      snprintf(active_dir, sizeof(active_dir), "%s/%03d%s", dcf->base_path,
+               dcf->current_dir_num, dcf->dir_suffix);
       if (is_directory(active_dir)) {
-        dcf->current_file_num = scan_max_file_number(active_dir, dcf->file_prefix);
+        dcf->current_file_num =
+            scan_max_file_number(active_dir, dcf->file_prefix);
       }
     } else {
       char date_dir[512];
-      snprintf(date_dir, sizeof(date_dir), "%s/%s",
-               dcf->base_path, dcf->current_date_str);
+      snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path,
+               dcf->current_date_str);
       if (is_directory(date_dir)) {
-        dcf->current_file_num = scan_max_file_number(date_dir, dcf->file_prefix);
+        dcf->current_file_num =
+            scan_max_file_number(date_dir, dcf->file_prefix);
       }
     }
   }
@@ -234,12 +235,14 @@ void dcf_storage_set_min_free_bytes(DcfStorage *dcf, uint64_t min_free_bytes) {
   dcf->min_free_bytes = min_free_bytes;
 }
 
-bool dcf_storage_get_free_space(const DcfStorage *dcf, uint64_t *out_free_bytes) {
+bool dcf_storage_get_free_space(const DcfStorage *dcf,
+                                uint64_t *out_free_bytes) {
   if (!dcf || !out_free_bytes) {
     return false;
   }
 
-  /* Check base_path if it already exists, otherwise check current working directory */
+  /* Check base_path if it already exists, otherwise check current working
+   * directory */
   const char *probe_path = is_directory(dcf->base_path) ? dcf->base_path : ".";
 
   struct statvfs vfs;
@@ -250,7 +253,8 @@ bool dcf_storage_get_free_space(const DcfStorage *dcf, uint64_t *out_free_bytes)
   return true;
 }
 
-bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size) {
+bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path,
+                               size_t out_size) {
   if (!dcf || !out_path || out_size == 0) {
     return false;
   }
@@ -260,13 +264,16 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
   if (dcf_storage_get_free_space(dcf, &free_bytes)) {
     if (free_bytes < dcf->min_free_bytes) {
       fprintf(stderr,
-              "[エラー] ストレージの空き容量が不足しています (空き: %.1f MiB, 必要: %.1f MiB)。\n",
+              "[エラー] ストレージの空き容量が不足しています (空き: %.1f MiB, "
+              "必要: %.1f MiB)。\n",
               (double)free_bytes / (1024.0 * 1024.0),
               (double)dcf->min_free_bytes / (1024.0 * 1024.0));
       return false;
     }
   } else {
-    fprintf(stderr, "[警告] ストレージ残容量の取得に失敗しました。保存処理を続行します。\n");
+    fprintf(stderr,
+            "[警告] "
+            "ストレージ残容量の取得に失敗しました。保存処理を続行します。\n");
   }
 
   /* 2. Handle date rollover in DCF_DIR_MODE_DATE */
@@ -274,12 +281,15 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
     char today[9];
     get_current_date_str(today, sizeof(today));
     if (strcmp(today, dcf->current_date_str) != 0) {
-      snprintf(dcf->current_date_str, sizeof(dcf->current_date_str), "%s", today);
+      snprintf(dcf->current_date_str, sizeof(dcf->current_date_str), "%s",
+               today);
       char date_dir[512];
-      snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path, dcf->current_date_str);
-      dcf->current_file_num = is_directory(date_dir)
-                                  ? scan_max_file_number(date_dir, dcf->file_prefix)
-                                  : 0;
+      snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path,
+               dcf->current_date_str);
+      dcf->current_file_num =
+          is_directory(date_dir)
+              ? scan_max_file_number(date_dir, dcf->file_prefix)
+              : 0;
     }
   }
 
@@ -291,7 +301,8 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
       if (dcf->mode == DCF_DIR_MODE_STANDARD) {
         if (dcf->current_dir_num >= DCF_DIR_MAX) {
           fprintf(stderr,
-                  "[エラー] DCF ディレクトリ番号の上限 (%d) およびファイル番号上限 (%d) に達しました。\n",
+                  "[エラー] DCF ディレクトリ番号の上限 (%d) "
+                  "およびファイル番号上限 (%d) に達しました。\n",
                   DCF_DIR_MAX, DCF_FILE_MAX);
           return false;
         }
@@ -300,7 +311,8 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
         next_file = 1;
       } else {
         fprintf(stderr,
-                "[エラー] 本日のフォルダ (%s) 内のファイル番号上限 (%d) に達しました。\n",
+                "[エラー] 本日のフォルダ (%s) 内のファイル番号上限 (%d) "
+                "に達しました。\n",
                 dcf->current_date_str, DCF_FILE_MAX);
         return false;
       }
@@ -308,23 +320,26 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
 
     char dir_path[512];
     if (dcf->mode == DCF_DIR_MODE_STANDARD) {
-      snprintf(dir_path, sizeof(dir_path), "%s/%03d%s",
-               dcf->base_path, dcf->current_dir_num, dcf->dir_suffix);
+      snprintf(dir_path, sizeof(dir_path), "%s/%03d%s", dcf->base_path,
+               dcf->current_dir_num, dcf->dir_suffix);
     } else {
-      snprintf(dir_path, sizeof(dir_path), "%s/%s",
-               dcf->base_path, dcf->current_date_str);
+      snprintf(dir_path, sizeof(dir_path), "%s/%s", dcf->base_path,
+               dcf->current_date_str);
     }
 
     if (!ensure_directory_exists(dir_path)) {
-      fprintf(stderr, "[エラー] 保存先ディレクトリの作成に失敗しました: %s\n", dir_path);
+      fprintf(stderr, "[エラー] 保存先ディレクトリの作成に失敗しました: %s\n",
+              dir_path);
       return false;
     }
 
     char candidate[512];
     int written = snprintf(candidate, sizeof(candidate), "%s/%s%04d.JPG",
                            dir_path, dcf->file_prefix, next_file);
-    if (written < 0 || (size_t)written >= sizeof(candidate) || (size_t)written >= out_size) {
-      fprintf(stderr, "[エラー] ファイルパスバッファのサイズが不足しています。\n");
+    if (written < 0 || (size_t)written >= sizeof(candidate) ||
+        (size_t)written >= out_size) {
+      fprintf(stderr,
+              "[エラー] ファイルパスバッファのサイズが不足しています。\n");
       return false;
     }
 
@@ -337,7 +352,8 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path, size_t out_size)
     }
   }
 
-  fprintf(stderr, "[エラー] 利用可能なDCFファイル番号が見つかりませんでした。\n");
+  fprintf(stderr,
+          "[エラー] 利用可能なDCFファイル番号が見つかりませんでした。\n");
   return false;
 }
 
@@ -356,16 +372,17 @@ void dcf_storage_resync(DcfStorage *dcf) {
   if (dcf->mode == DCF_DIR_MODE_STANDARD) {
     dcf->current_dir_num = scan_max_dir_number(dcf->base_path, dcf->dir_suffix);
     char active_dir[512];
-    snprintf(active_dir, sizeof(active_dir), "%s/%03d%s",
-             dcf->base_path, dcf->current_dir_num, dcf->dir_suffix);
+    snprintf(active_dir, sizeof(active_dir), "%s/%03d%s", dcf->base_path,
+             dcf->current_dir_num, dcf->dir_suffix);
     if (is_directory(active_dir)) {
-      dcf->current_file_num = scan_max_file_number(active_dir, dcf->file_prefix);
+      dcf->current_file_num =
+          scan_max_file_number(active_dir, dcf->file_prefix);
     }
   } else {
     get_current_date_str(dcf->current_date_str, sizeof(dcf->current_date_str));
     char date_dir[512];
-    snprintf(date_dir, sizeof(date_dir), "%s/%s",
-             dcf->base_path, dcf->current_date_str);
+    snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path,
+             dcf->current_date_str);
     if (is_directory(date_dir)) {
       dcf->current_file_num = scan_max_file_number(date_dir, dcf->file_prefix);
     }
@@ -397,8 +414,8 @@ static bool has_jpeg_extension(const char *name) {
 static bool media_list_push(DcfMediaList *list, const DcfMediaEntry *entry) {
   if (list->count >= list->capacity) {
     size_t new_cap = list->capacity == 0 ? 32 : list->capacity * 2;
-    DcfMediaEntry *new_arr =
-        (DcfMediaEntry *)realloc(list->entries, new_cap * sizeof(DcfMediaEntry));
+    DcfMediaEntry *new_arr = (DcfMediaEntry *)realloc(
+        list->entries, new_cap * sizeof(DcfMediaEntry));
     if (!new_arr) {
       return false;
     }
@@ -520,9 +537,8 @@ bool dcf_storage_scan_media(const DcfStorage *dcf, DcfMediaList *out_list) {
       DcfMediaEntry item;
       memset(&item, 0, sizeof(item));
       snprintf(item.filepath, sizeof(item.filepath), "%s", full_path);
-      int dn_written =
-          snprintf(item.display_name, sizeof(item.display_name), "%s/%s",
-                   sub_entry->d_name, file_entry->d_name);
+      int dn_written = snprintf(item.display_name, sizeof(item.display_name),
+                                "%s/%s", sub_entry->d_name, file_entry->d_name);
       int fn_written = snprintf(item.filename, sizeof(item.filename), "%s",
                                 file_entry->d_name);
       if (dn_written < 0 || (size_t)dn_written >= sizeof(item.display_name) ||
@@ -609,4 +625,3 @@ int dcf_storage_delete_all_unprotected(DcfStorage *dcf) {
   }
   return deleted_count;
 }
-

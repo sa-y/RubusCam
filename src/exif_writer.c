@@ -73,8 +73,8 @@ void exif_metadata_init(ExifMetadata *meta, const char *camera_model, int width,
   time_t now = time(NULL);
   struct tm tm_buf;
   localtime_r(&now, &tm_buf);
-  strftime(meta->datetime_str, sizeof(meta->datetime_str),
-           "%Y:%m:%d %H:%M:%S", &tm_buf);
+  strftime(meta->datetime_str, sizeof(meta->datetime_str), "%Y:%m:%d %H:%M:%S",
+           &tm_buf);
 
   meta->width = width > 0 ? width : 0;
   meta->height = height > 0 ? height : 0;
@@ -294,8 +294,8 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
 
   size_t data_off = ifd0_next_ptr_off + 4;
 
-  const char *dt_str =
-      meta->datetime_str[0] != '\0' ? meta->datetime_str : "2026:01:01 00:00:00";
+  const char *dt_str = meta->datetime_str[0] != '\0' ? meta->datetime_str
+                                                     : "2026:01:01 00:00:00";
 
   /* IFD0 Entry 0: 0x010F Make */
   if (!put_ifd_ascii(tiff_base, tiff_cap, ifd0_entries + 0 * 12, 0x010F,
@@ -327,8 +327,8 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
     return 0;
   }
   /* IFD0 Entry 7: 0x0132 DateTime */
-  if (!put_ifd_ascii(tiff_base, tiff_cap, ifd0_entries + 7 * 12, 0x0132,
-                     dt_str, &data_off)) {
+  if (!put_ifd_ascii(tiff_base, tiff_cap, ifd0_entries + 7 * 12, 0x0132, dt_str,
+                     &data_off)) {
     return 0;
   }
 
@@ -351,7 +351,8 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
   data_off = sub_next_ptr_off + 4;
 
   /* SubIFD Entry 0: 0x829A ExposureTime (RATIONAL) */
-  uint32_t exp_num = meta->exposure_us > 0 ? (uint32_t)meta->exposure_us : 16667U;
+  uint32_t exp_num =
+      meta->exposure_us > 0 ? (uint32_t)meta->exposure_us : 16667U;
   uint32_t exp_den = 1000000U;
   uint32_t g = gcd_u32(exp_num, exp_den);
   exp_num /= g;
@@ -434,7 +435,8 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
 
   /* 4. Finalize APP1 Marker Header */
   size_t tiff_len = data_off;
-  size_t app1_payload_len = 2 + 6 + tiff_len; /* length field + "Exif\0\0" + TIFF */
+  size_t app1_payload_len =
+      2 + 6 + tiff_len; /* length field + "Exif\0\0" + TIFF */
   if (app1_payload_len > 65535) {
     return 0;
   }
@@ -511,7 +513,8 @@ bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
   return true;
 }
 
-bool exif_inject_into_jpeg_file(const char *filepath, const ExifMetadata *meta) {
+bool exif_inject_into_jpeg_file(const char *filepath,
+                                const ExifMetadata *meta) {
   if (!filepath || !meta) {
     return false;
   }
@@ -553,4 +556,3 @@ bool exif_inject_into_jpeg_file(const char *filepath, const ExifMetadata *meta) 
   free(jpeg_buf);
   return ok;
 }
-

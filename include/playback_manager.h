@@ -42,7 +42,8 @@ typedef enum {
  * Sub-view mode inside APP_MODE_PLAYBACK.
  */
 typedef enum {
-  PLAY_VIEW_SINGLE = 0,   /* Single photo view (supports 1x/2x/4x/8x zoom & pan) */
+  PLAY_VIEW_SINGLE =
+      0, /* Single photo view (supports 1x/2x/4x/8x zoom & pan) */
   PLAY_VIEW_GRID_3X3 = 1, /* 3x3 thumbnail index view (9 photos per page) */
   PLAY_VIEW_GRID_4X4 = 2  /* 4x4 thumbnail index view (16 photos per page) */
 } PlayViewMode;
@@ -117,7 +118,8 @@ typedef struct {
 
   /* Delete confirmation modal dialog state */
   bool delete_dialog_open;
-  int delete_dialog_selection; /* 0=Delete Single, 1=Delete All Unprotected, 2=Cancel */
+  int delete_dialog_selection; /* 0=Delete Single, 1=Delete All Unprotected,
+                                  2=Cancel */
 
   /* Toast notification banner (rendered in both Live and Playback modes) */
   char toast_message[320];
@@ -209,4 +211,3 @@ void playback_manager_render_toast(PlaybackManager *pm, SDL_Renderer *renderer,
 #endif
 
 #endif /* PLAYBACK_MANAGER_H */
-

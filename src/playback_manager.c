@@ -79,12 +79,10 @@ static void calculate_aspect_fit_rect(int src_w, int src_h,
  * surface exceeds the hardware renderer's max_texture_width/max_texture_height
  * (e.g. 4096px limit on Raspberry Pi 4 VideoCore VI vs 4608px IMX708 still).
  */
-static SDL_Texture *create_safe_texture_from_surface(SDL_Renderer *renderer,
-                                                     SDL_Surface *surf,
-                                                     int max_target_w,
-                                                     int max_target_h,
-                                                     int *out_tex_w,
-                                                     int *out_tex_h) {
+static SDL_Texture *
+create_safe_texture_from_surface(SDL_Renderer *renderer, SDL_Surface *surf,
+                                 int max_target_w, int max_target_h,
+                                 int *out_tex_w, int *out_tex_h) {
   if (!renderer || !surf) {
     return NULL;
   }
@@ -207,10 +205,10 @@ static void parse_exif_ifd(const uint8_t *tiff_base, size_t tiff_len,
       parse_exif_ifd(tiff_base, tiff_len, val_offset, le, meta, depth + 1);
     } else if (tag == 0x0110 && type == 2 && count > 0) {
       /* Camera Model (ASCII) */
-      const uint8_t *str_ptr =
-          (count <= 4) ? (tiff_base + pos + 8)
-                       : (val_offset + count <= tiff_len ? tiff_base + val_offset
-                                                         : NULL);
+      const uint8_t *str_ptr = (count <= 4) ? (tiff_base + pos + 8)
+                                            : (val_offset + count <= tiff_len
+                                                   ? tiff_base + val_offset
+                                                   : NULL);
       if (str_ptr) {
         size_t copy_len = count < sizeof(meta->camera_model) - 1
                               ? count
@@ -224,10 +222,10 @@ static void parse_exif_ifd(const uint8_t *tiff_base, size_t tiff_len,
       if (tag == 0x0132 && meta->datetime_str[0] != '\0') {
         continue;
       }
-      const uint8_t *str_ptr =
-          (count <= 4) ? (tiff_base + pos + 8)
-                       : (val_offset + count <= tiff_len ? tiff_base + val_offset
-                                                         : NULL);
+      const uint8_t *str_ptr = (count <= 4) ? (tiff_base + pos + 8)
+                                            : (val_offset + count <= tiff_len
+                                                   ? tiff_base + val_offset
+                                                   : NULL);
       if (str_ptr) {
         size_t copy_len = count < sizeof(meta->datetime_str) - 1
                               ? count
@@ -316,11 +314,10 @@ static void parse_jpeg_metadata(PlaybackManager *pm, const DcfMediaEntry *entry,
                 ? rec->exp_status.iso_setting
                 : (int)(rec->exp_status.actual_analogue_gain * 100.0f + 0.5f);
         out_meta->ev_bias = rec->exp_status.ev_compensation;
-        out_meta->wb_mode =
-            (rec->exp_status.awb_locked ||
-             rec->exp_status.wb_mode != CAMERA_WB_MODE_AUTO)
-                ? 1
-                : 0;
+        out_meta->wb_mode = (rec->exp_status.awb_locked ||
+                             rec->exp_status.wb_mode != CAMERA_WB_MODE_AUTO)
+                                ? 1
+                                : 0;
         switch (rec->exp_status.metering_mode) {
         case CAMERA_METERING_CENTRE_WEIGHTED:
           out_meta->metering_mode = 2;
@@ -674,7 +671,8 @@ void playback_manager_enter_playback(PlaybackManager *pm,
     return;
   }
 
-  /* Ensure any in-flight background JPEG writes complete before scanning DCIM */
+  /* Ensure any in-flight background JPEG writes complete before scanning DCIM
+   */
   if (pm->save_queue) {
     async_save_queue_wait_idle(pm->save_queue);
   }
@@ -757,8 +755,7 @@ static void execute_delete_single(PlaybackManager *pm, SDL_Renderer *renderer) {
   DcfMediaEntry *entry = &pm->media_list.entries[pm->current_index];
   if (entry->is_protected || dcf_storage_is_protected(entry->filepath)) {
     entry->is_protected = true;
-    set_toast(pm,
-              "[警告] 保護された画像は削除できません ([L]キーで解除可能)",
+    set_toast(pm, "[警告] 保護された画像は削除できません ([L]キーで解除可能)",
               2800);
     return;
   }
@@ -825,9 +822,8 @@ static void execute_delete_all_unprotected(PlaybackManager *pm,
     snprintf(msg, sizeof(msg),
              "削除対象がありません (全画像が保護されています)");
   } else {
-    snprintf(msg, sizeof(msg),
-             "未保護の画像を %d 枚削除しました (残り %zu 枚)", deleted,
-             pm->media_list.count);
+    snprintf(msg, sizeof(msg), "未保護の画像を %d 枚削除しました (残り %zu 枚)",
+             deleted, pm->media_list.count);
   }
   set_toast(pm, msg, 2800);
 }
@@ -852,8 +848,8 @@ bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
     case SDLK_d:
       if (pm->quick_review_protected) {
         set_toast(pm, "[警告] 保護された画像は削除できません", 2200);
-      } else if (async_save_queue_cancel_or_delete(
-                     pm->save_queue, pm->dcf, pm->quick_review_filepath)) {
+      } else if (async_save_queue_cancel_or_delete(pm->save_queue, pm->dcf,
+                                                   pm->quick_review_filepath)) {
         printf("[-] クイックレビュー: 直前の撮影画像を破棄しました (%s)\n",
                pm->quick_review_filepath);
         set_toast(pm, "直前の撮影画像を削除しました", 2200);
@@ -1210,8 +1206,7 @@ static void render_zoom_pip_map(SDL_Renderer *renderer, int win_w, int win_h,
 
   SDL_Rect inner = {outer.x + (int)(x0 * (float)outer.w),
                     outer.y + (int)(y0 * (float)outer.h),
-                    (int)(span * (float)outer.w),
-                    (int)(span * (float)outer.h)};
+                    (int)(span * (float)outer.w), (int)(span * (float)outer.h)};
   if (inner.w < 6) {
     inner.w = 6;
   }
@@ -1285,9 +1280,8 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
     SDL_Color lock_bd = {255, 200, 40, 220};
     int tw = 0;
     text_renderer_measure_text("[LOCKED / PROTECTED]", &tw, NULL);
-    text_renderer_draw_badge(renderer, "[LOCKED / PROTECTED]",
-                             win_w - tw - 38, 12, lock_fg, lock_bg, lock_bd,
-                             NULL);
+    text_renderer_draw_badge(renderer, "[LOCKED / PROTECTED]", win_w - tw - 38,
+                             12, lock_fg, lock_bg, lock_bd, NULL);
   }
 
   /* Detailed Exif / Metadata Panel (top-left under guide when enabled) */
@@ -1297,9 +1291,9 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
     char line3[256];
 
     double mib = (double)entry->file_size / (1024.0 * 1024.0);
-    double mp = ((double)pm->current_meta.width *
-                 (double)pm->current_meta.height) /
-                1000000.0;
+    double mp =
+        ((double)pm->current_meta.width * (double)pm->current_meta.height) /
+        1000000.0;
 
     snprintf(line1, sizeof(line1), "[%d / %zu]  %s   (%s)%s%s",
              pm->current_index + 1, pm->media_list.count, entry->display_name,
@@ -1309,12 +1303,12 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
                  ? pm->current_meta.camera_model
                  : "");
 
-    snprintf(line2, sizeof(line2),
-             "Resolution: %d x %d (%.1f MP)   |   Size: %.2f MiB   |   Date: %s",
-             pm->current_meta.width, pm->current_meta.height, mp, mib,
-             pm->current_meta.datetime_str[0] != '\0'
-                 ? pm->current_meta.datetime_str
-                 : "---");
+    snprintf(
+        line2, sizeof(line2),
+        "Resolution: %d x %d (%.1f MP)   |   Size: %.2f MiB   |   Date: %s",
+        pm->current_meta.width, pm->current_meta.height, mp, mib,
+        pm->current_meta.datetime_str[0] != '\0' ? pm->current_meta.datetime_str
+                                                 : "---");
 
     char ss_buf[32];
     format_exposure_time(pm->current_meta.exposure_us, ss_buf, sizeof(ss_buf));
@@ -1352,7 +1346,8 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
     }
 
     snprintf(line3, sizeof(line3),
-             "Exif: SS %s  |  ISO %s  |  EV %+.1f%s  |  WB %s  |  Met %s  |  Zoom %.0fx",
+             "Exif: SS %s  |  ISO %s  |  EV %+.1f%s  |  WB %s  |  Met %s  |  "
+             "Zoom %.0fx",
              ss_buf, iso_buf, pm->current_meta.ev_bias, optics_buf, wb_label,
              met_label, ZOOM_FACTORS[pm->zoom_step_index]);
 
@@ -1402,17 +1397,17 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
   int cols = get_grid_columns(pm->view_mode);
   int rows = cols;
   int per_page = get_grid_cells_per_page(pm->view_mode);
-  int total_pages =
-      ((int)pm->media_list.count + per_page - 1) / per_page;
+  int total_pages = ((int)pm->media_list.count + per_page - 1) / per_page;
   int cur_page = pm->current_index / per_page;
   int start_idx = cur_page * per_page;
 
   /* Top guide bar */
   char header[160];
-  snprintf(header, sizeof(header),
-           "[INDEX %dx%d] Page %d/%d (%zu photos)   [Arrows]:Move  [Enter/Z]:Open  "
-           "[G]:Grid Size  [L]:Lock  [Del]:Delete  [P]:Live",
-           cols, rows, cur_page + 1, total_pages, pm->media_list.count);
+  snprintf(
+      header, sizeof(header),
+      "[INDEX %dx%d] Page %d/%d (%zu photos)   [Arrows]:Move  [Enter/Z]:Open  "
+      "[G]:Grid Size  [L]:Lock  [Del]:Delete  [P]:Live",
+      cols, rows, cur_page + 1, total_pages, pm->media_list.count);
   SDL_Color white = {255, 255, 255, 255};
   SDL_Color panel_bg = {0, 0, 0, 190};
   SDL_Color panel_border = {255, 255, 255, 70};
@@ -1557,9 +1552,9 @@ static void render_delete_dialog(const PlaybackManager *pm,
   }
 
   SDL_Color hint_col = {190, 195, 205, 255};
-  text_renderer_draw_text(
-      renderer, "[Up/Down]:Select   [Enter]:Confirm   [Esc]:Cancel",
-      dlg.x + 20, dlg.y + dlg.h - 28, hint_col, NULL, NULL);
+  text_renderer_draw_text(renderer,
+                          "[Up/Down]:Select   [Enter]:Confirm   [Esc]:Cancel",
+                          dlg.x + 20, dlg.y + dlg.h - 28, hint_col, NULL, NULL);
 }
 
 void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
@@ -1586,8 +1581,7 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
                              : 0;
 
     char banner[640];
-    snprintf(banner, sizeof(banner),
-             "[QUICK REVIEW %.1fs] Saved: %s (%dx%d)",
+    snprintf(banner, sizeof(banner), "[QUICK REVIEW %.1fs] Saved: %s (%dx%d)",
              (double)remain_ms / 1000.0, pm->quick_review_filepath,
              pm->current_meta.width, pm->current_meta.height);
 
@@ -1623,8 +1617,8 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     SDL_Color white = {255, 255, 255, 255};
     SDL_Color bg = {30, 32, 40, 220};
     SDL_Color bd = {120, 130, 150, 180};
-    const char *empty_msg =
-        "保存された写真がありません (No Images in DCIM)  —  [P / Space]: 撮影モードへ戻る";
+    const char *empty_msg = "保存された写真がありません (No Images in DCIM)  — "
+                            " [P / Space]: 撮影モードへ戻る";
     int tw = 0, th = 0;
     text_renderer_measure_text(empty_msg, &tw, &th);
     text_renderer_draw_badge(renderer, empty_msg, (win_w - tw - 24) / 2,
