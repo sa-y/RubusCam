@@ -63,7 +63,7 @@
 - [ ] **`SDL_GetTicks()` の 32bit ラップアラウンド比較の修正** `[優先度: 低]` `[難易度: 易]`
   - **対象**: `src/playback_manager.c` (`playback_manager_render_toast`)
   - **内容**: `now >= pm->toast_expire_ms` の単純大小比較を `SDL_TICKS_PASSED(now, pm->toast_expire_ms)`（または経過時間差分比較）に統一する。
-- [ ] **既存 Exif 付き JPEG への再注入時の APP1 セグメント重複防止** `[優先度: 低]` `[難易度: 易]`
+- [x] **既存 Exif 付き JPEG への再注入時の APP1 セグメント重複防止** `[優先度: 低]` `[難易度: 易]`
   - **対象**: `src/exif_writer.c` (`exif_write_jpeg_with_app1`, `exif_inject_into_jpeg_file`)
   - **内容**: SOI (`0xFFD8`) 直後に無条件で APP1 を挿入すると既存 Exif を持つ JPEG で APP1 が二重になるため、既存の Exif APP1 セグメントが存在する場合はスキップ・置換するように改善する。
 

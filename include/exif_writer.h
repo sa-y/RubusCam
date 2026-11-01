@@ -56,14 +56,16 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
 /*
  * Write a JPEG buffer (already encoded in memory starting with 0xFFD8) to
  * filepath while injecting the Exif APP1 segment immediately after the SOI
- * marker. Writes via a temporary file and renames atomically.
+ * marker (replacing any pre-existing Exif APP1 segments). Writes via a
+ * temporary file and renames atomically.
  * Returns true on success, false on failure.
  */
 bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
                                size_t jpeg_size, const ExifMetadata *meta);
 
 /*
- * Inject an Exif APP1 segment into an existing JPEG file on disk atomically.
+ * Inject (or replace) an Exif APP1 segment into an existing JPEG file on disk
+ * atomically.
  * Returns true on success, false on failure.
  */
 bool exif_inject_into_jpeg_file(const char *filepath, const ExifMetadata *meta);

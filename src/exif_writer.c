@@ -487,10 +487,56 @@ bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
     }
   }
 
-  /* 3. Write remainder of JPEG stream after SOI */
-  if (ok && jpeg_size > 2) {
-    size_t rem = jpeg_size - 2;
-    if (fwrite(jpeg_data + 2, 1, rem, fp) != rem) {
+  /* 3. Write remainder of JPEG stream after SOI, skipping any pre-existing
+   * Exif APP1 ("Exif\0\0") segments to prevent duplicate APP1 headers. */
+  size_t pos = 2;
+  while (ok && pos + 4 <= jpeg_size && jpeg_data[pos] == 0xFF) {
+    size_t marker_start = pos;
+    while (pos < jpeg_size && jpeg_data[pos] == 0xFF) {
+      pos++;
+    }
+    if (pos >= jpeg_size) {
+      pos = marker_start;
+      break;
+    }
+
+    uint8_t marker = jpeg_data[pos++];
+    /* Stop header scan at SOS (0xDA), EOI (0xD9), or standalone markers */
+    if (marker == 0xDA || marker == 0xD9 || marker == 0x00 || marker == 0x01 ||
+        (marker >= 0xD0 && marker <= 0xD8)) {
+      pos = marker_start;
+      break;
+    }
+
+    if (pos + 2 > jpeg_size) {
+      pos = marker_start;
+      break;
+    }
+    uint16_t seg_len =
+        ((uint16_t)jpeg_data[pos] << 8) | (uint16_t)jpeg_data[pos + 1];
+    if (seg_len < 2 || pos + seg_len > jpeg_size) {
+      pos = marker_start;
+      break;
+    }
+
+    size_t seg_end = pos + seg_len;
+    bool is_exif_app1 =
+        (app1_len > 0 && marker == 0xE1 && seg_len >= 8 &&
+         memcmp(jpeg_data + pos + 2, "Exif\0\0", 6) == 0);
+
+    if (!is_exif_app1) {
+      size_t chunk_len = seg_end - marker_start;
+      if (fwrite(jpeg_data + marker_start, 1, chunk_len, fp) != chunk_len) {
+        ok = false;
+        break;
+      }
+    }
+    pos = seg_end;
+  }
+
+  if (ok && pos < jpeg_size) {
+    size_t rem = jpeg_size - pos;
+    if (fwrite(jpeg_data + pos, 1, rem, fp) != rem) {
       ok = false;
     }
   }
