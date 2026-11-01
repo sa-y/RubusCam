@@ -67,7 +67,11 @@ struct CameraStream {
   int m_width = 480;
   int m_height = 320;
   int m_stride = 0;
-  bool m_isBGR = false;
+  // True when pixel bytes in memory are ordered [B, G, R] (SDL_PIXELFORMAT_BGR24).
+  // Note: libcamera/DRM pixel format names follow little-endian 24-bit word
+  // conventions where `formats::RGB888` stores [B, G, R] in memory and
+  // `formats::BGR888` stores [R, G, B] in memory.
+  bool m_memoryOrderIsBGR = false;
 
   // High-resolution still stream properties (0 = auto sensor maximum)
   int m_requestedStillWidth = 0;
@@ -75,7 +79,7 @@ struct CameraStream {
   int m_stillWidth = 0;
   int m_stillHeight = 0;
   int m_stillStride = 0;
-  bool m_stillIsBGR = false;
+  bool m_stillMemoryOrderIsBGR = false;
   bool m_dualStreamActive = false;
 
   bool m_afSupported = false;
@@ -114,7 +118,7 @@ struct CameraStream {
   int m_capturedStillWidth = 0;
   int m_capturedStillHeight = 0;
   int m_capturedStillStride = 0;
-  bool m_capturedStillIsBGR = false;
+  bool m_capturedStillMemoryOrderIsBGR = false;
   CameraExposureStatus m_capturedStillExpStatus{};
 
   std::string m_cameraModel = "RubusCam (libcamera)";
@@ -159,7 +163,8 @@ struct CameraStream {
   void teardownStreams();
   bool configureDualOrSingleStream();
   bool captureStillByModeSwitch(std::vector<uint8_t> &outBuffer, int &outWidth,
-                                int &outHeight, int &outStride, bool &outIsBGR);
+                                int &outHeight, int &outStride,
+                                bool &outMemoryOrderIsBGR);
 };
 
 void CameraStream::applyWhiteBalanceToControlList(
@@ -638,14 +643,19 @@ bool CameraStream::configureDualOrSingleStream() {
           m_stillWidth = activeStillCfg.size.width;
           m_stillHeight = activeStillCfg.size.height;
           m_stillStride = activeStillCfg.stride;
-          m_stillIsBGR =
+          // In DRM/libcamera conventions, formats::RGB888 lays out bytes in
+          // memory as [B, G, R] (which corresponds to SDL_PIXELFORMAT_BGR24),
+          // whereas formats::BGR888 lays out bytes as [R, G, B]
+          // (SDL_PIXELFORMAT_RGB24).
+          m_stillMemoryOrderIsBGR =
               (activeStillCfg.pixelFormat == libcamera::formats::RGB888);
 
           m_stream = activeVfCfg.stream();
           m_width = activeVfCfg.size.width;
           m_height = activeVfCfg.size.height;
           m_stride = activeVfCfg.stride;
-          m_isBGR = (activeVfCfg.pixelFormat == libcamera::formats::RGB888);
+          m_memoryOrderIsBGR =
+              (activeVfCfg.pixelFormat == libcamera::formats::RGB888);
           m_dualStreamActive = true;
 
           if (allocateAndMapStreams()) {
@@ -698,7 +708,11 @@ bool CameraStream::configureDualOrSingleStream() {
     }
   }
 
-  m_isBGR = (streamConfig.pixelFormat == libcamera::formats::RGB888);
+  // DRM/libcamera formats::RGB888 stores bytes in memory as [B, G, R]
+  // (SDL_PIXELFORMAT_BGR24); formats::BGR888 stores bytes as [R, G, B]
+  // (SDL_PIXELFORMAT_RGB24).
+  m_memoryOrderIsBGR =
+      (streamConfig.pixelFormat == libcamera::formats::RGB888);
   m_width = streamConfig.size.width;
   m_height = streamConfig.size.height;
   m_stride = streamConfig.stride;
@@ -812,7 +826,7 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
           m_capturedStillWidth = m_stillWidth;
           m_capturedStillHeight = m_stillHeight;
           m_capturedStillStride = m_stillStride;
-          m_capturedStillIsBGR = m_stillIsBGR;
+          m_capturedStillMemoryOrderIsBGR = m_stillMemoryOrderIsBGR;
           populateExposureStatus(&m_capturedStillExpStatus);
           m_stillFrameReady = true;
         }
@@ -861,7 +875,8 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
 
 bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
                                             int &outWidth, int &outHeight,
-                                            int &outStride, bool &outIsBGR) {
+                                            int &outStride,
+                                            bool &outMemoryOrderIsBGR) {
   if (!m_camera)
     return false;
 
@@ -980,7 +995,10 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
                   outWidth = sc.size.width;
                   outHeight = sc.size.height;
                   outStride = sc.stride;
-                  outIsBGR = (sc.pixelFormat == libcamera::formats::RGB888);
+                  // DRM/libcamera formats::RGB888 stores bytes in memory as
+                  // [B, G, R] (SDL_PIXELFORMAT_BGR24).
+                  outMemoryOrderIsBGR =
+                      (sc.pixelFormat == libcamera::formats::RGB888);
                   m_stillWidth = outWidth;
                   m_stillHeight = outHeight;
                   captured = true;
@@ -1202,7 +1220,7 @@ size_t camera_stream_get_frame_size(const CameraStream *cam) {
 }
 
 bool camera_stream_is_bgr(const CameraStream *cam) {
-  return cam ? cam->m_isBGR : false;
+  return cam ? cam->m_memoryOrderIsBGR : false;
 }
 
 int camera_stream_get_still_width(const CameraStream *cam) {
@@ -1408,7 +1426,7 @@ bool camera_stream_capture_still(CameraStream *cam, const char *filename,
       width = cam->m_stillWidth;
       height = cam->m_stillHeight;
       stride = cam->m_stillStride;
-      isBGR = cam->m_stillIsBGR;
+      isBGR = cam->m_stillMemoryOrderIsBGR;
     } else {
       cam->m_stillCapturePending = false;
       std::cerr << "[警告] "
@@ -1431,7 +1449,7 @@ bool camera_stream_capture_still(CameraStream *cam, const char *filename,
       width = cam->m_width;
       height = cam->m_height;
       stride = cam->m_stride;
-      isBGR = cam->m_isBGR;
+      isBGR = cam->m_memoryOrderIsBGR;
     }
   }
 
@@ -1497,7 +1515,7 @@ bool camera_stream_request_still(CameraStream *cam) {
     width = cam->m_width;
     height = cam->m_height;
     stride = cam->m_stride;
-    isBGR = cam->m_isBGR;
+    isBGR = cam->m_memoryOrderIsBGR;
   }
 
   if (stillCopy.empty()) {
@@ -1511,7 +1529,7 @@ bool camera_stream_request_still(CameraStream *cam) {
     cam->m_capturedStillWidth = width;
     cam->m_capturedStillHeight = height;
     cam->m_capturedStillStride = stride;
-    cam->m_capturedStillIsBGR = isBGR;
+    cam->m_capturedStillMemoryOrderIsBGR = isBGR;
     camera_stream_get_exposure_status(cam, &cam->m_capturedStillExpStatus);
     cam->m_stillFrameReady = true;
   }
@@ -1544,7 +1562,7 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
       width = cam->m_capturedStillWidth;
       height = cam->m_capturedStillHeight;
       stride = cam->m_capturedStillStride;
-      isBGR = cam->m_capturedStillIsBGR;
+      isBGR = cam->m_capturedStillMemoryOrderIsBGR;
       expStatus = cam->m_capturedStillExpStatus;
       ready = true;
     }
@@ -1573,7 +1591,7 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
       width = cam->m_width;
       height = cam->m_height;
       stride = cam->m_stride;
-      isBGR = cam->m_isBGR;
+      isBGR = cam->m_memoryOrderIsBGR;
     }
     camera_stream_get_exposure_status(cam, &expStatus);
     if (localBuf.empty()) {

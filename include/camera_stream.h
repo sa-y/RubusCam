@@ -63,6 +63,11 @@ int camera_stream_get_width(const CameraStream *cam);
 int camera_stream_get_height(const CameraStream *cam);
 int camera_stream_get_stride(const CameraStream *cam);
 size_t camera_stream_get_frame_size(const CameraStream *cam);
+/*
+ * Return true if preview frame bytes in memory are ordered [B, G, R]
+ * (corresponding to SDL_PIXELFORMAT_BGR24 / DRM & libcamera formats::RGB888),
+ * or false if ordered [R, G, B] (SDL_PIXELFORMAT_RGB24 / formats::BGR888).
+ */
 bool camera_stream_is_bgr(const CameraStream *cam);
 
 /*
@@ -209,7 +214,7 @@ typedef struct CameraCapturedStill {
   int width;
   int height;
   int stride;
-  bool is_bgr;
+  bool is_bgr; /* True if memory byte order is [B, G, R] (SDL_PIXELFORMAT_BGR24) */
   CameraExposureStatus exp_status;
 } CameraCapturedStill;
 
