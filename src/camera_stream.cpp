@@ -27,6 +27,36 @@ struct MappedPlane {
   void *address = nullptr;
   size_t length = 0;
 };
+
+// Approximate Raspberry Pi IMX708 / IMX219 Red & Blue colour gains for a given
+// colour temperature in Kelvin (2500K .. 10000K) using piecewise linear
+// interpolation across calibrated reference points.
+void kelvinToColourGains(int kelvin, float &outRed, float &outBlue) {
+  struct GainPoint {
+    int k;
+    float r;
+    float b;
+  };
+  static constexpr GainPoint kPoints[] = {
+      {2500, 1.15f, 2.75f}, {3000, 1.32f, 2.38f}, {4000, 1.62f, 1.95f},
+      {5000, 1.88f, 1.68f}, {5500, 2.00f, 1.56f}, {6500, 2.22f, 1.40f},
+      {7500, 2.42f, 1.28f}, {8500, 2.60f, 1.18f}, {10000, 2.82f, 1.08f},
+  };
+  constexpr size_t kNumPoints = sizeof(kPoints) / sizeof(kPoints[0]);
+
+  int clamped = std::clamp(kelvin, kPoints[0].k, kPoints[kNumPoints - 1].k);
+  for (size_t i = 0; i + 1 < kNumPoints; ++i) {
+    if (clamped >= kPoints[i].k && clamped <= kPoints[i + 1].k) {
+      float t = static_cast<float>(clamped - kPoints[i].k) /
+                static_cast<float>(kPoints[i + 1].k - kPoints[i].k);
+      outRed = kPoints[i].r + t * (kPoints[i + 1].r - kPoints[i].r);
+      outBlue = kPoints[i].b + t * (kPoints[i + 1].b - kPoints[i].b);
+      return;
+    }
+  }
+  outRed = 2.00f;
+  outBlue = 1.56f;
+}
 } // namespace
 
 // C++ internal representation for CameraStream
@@ -94,16 +124,33 @@ struct CameraStream {
   std::atomic<float> m_lastLensPosition{0.0f};
   std::atomic<bool> m_hasLensPosition{false};
 
-  // Exposure control settings & live sensor metadata
+  // Exposure, White Balance, and Metering control settings & live sensor
+  // metadata
   std::atomic<float> m_evCompensation{0.0f};
   std::atomic<int> m_isoSetting{0};           // 0 = Auto, 100 ~ 3200
   std::atomic<int32_t> m_shutterUsSetting{0}; // 0 = Auto, >0 = manual us
+  std::atomic<int> m_wbMode{CAMERA_WB_MODE_AUTO};
+  std::atomic<int> m_wbKelvin{5500}; // 2500 ~ 10000 K
+  std::atomic<bool> m_awbLocked{false};
+  std::atomic<float> m_lockedRedGain{2.00f};
+  std::atomic<float> m_lockedBlueGain{1.56f};
+  std::atomic<int> m_meteringMode{CAMERA_METERING_MATRIX};
+
   std::atomic<int> m_evPendingCount{0};
   std::atomic<int> m_isoPendingCount{0};
   std::atomic<int> m_shutterPendingCount{0};
+  std::atomic<int> m_wbPendingCount{0};
+  std::atomic<int> m_meteringPendingCount{0};
+
   std::atomic<float> m_actualGain{1.0f};
   std::atomic<int32_t> m_actualExposureUs{0};
+  std::atomic<int32_t> m_actualColourTempK{5500};
+  std::atomic<float> m_actualRedGain{2.00f};
+  std::atomic<float> m_actualBlueGain{1.56f};
 
+  void applyWhiteBalanceToControlList(libcamera::ControlList &ctrls) const;
+  void applyMeteringToControlList(libcamera::ControlList &ctrls) const;
+  void populateExposureStatus(CameraExposureStatus *out_status) const;
   void applyStartExposureControls(libcamera::ControlList &ctrls) const;
   void applyPendingExposureControls(libcamera::ControlList &ctrls);
   void requestCompleted(libcamera::Request *request);
@@ -114,6 +161,149 @@ struct CameraStream {
   bool captureStillByModeSwitch(std::vector<uint8_t> &outBuffer, int &outWidth,
                                 int &outHeight, int &outStride, bool &outIsBGR);
 };
+
+void CameraStream::applyWhiteBalanceToControlList(
+    libcamera::ControlList &ctrls) const {
+  if (!m_camera) {
+    return;
+  }
+  const auto &camCtrls = m_camera->controls();
+  const bool hasAwbEnable =
+      camCtrls.find(&libcamera::controls::AwbEnable) != camCtrls.end();
+  const bool hasAwbMode =
+      camCtrls.find(&libcamera::controls::AwbMode) != camCtrls.end();
+  const bool hasColourGains =
+      camCtrls.find(&libcamera::controls::ColourGains) != camCtrls.end();
+  const bool hasColourTemp =
+      camCtrls.find(&libcamera::controls::ColourTemperature) != camCtrls.end();
+
+  if (m_awbLocked.load()) {
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, false);
+    }
+    if (hasColourGains) {
+      float gains[2] = {m_lockedRedGain.load(), m_lockedBlueGain.load()};
+      ctrls.set(libcamera::controls::ColourGains, gains);
+    }
+    return;
+  }
+
+  const auto mode = static_cast<CameraWbMode>(m_wbMode.load());
+  switch (mode) {
+  case CAMERA_WB_MODE_AUTO:
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, true);
+    }
+    if (hasAwbMode) {
+      ctrls.set(libcamera::controls::AwbMode, libcamera::controls::AwbAuto);
+    }
+    break;
+
+  case CAMERA_WB_MODE_DAYLIGHT:
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, true);
+    }
+    if (hasAwbMode) {
+      ctrls.set(libcamera::controls::AwbMode, libcamera::controls::AwbDaylight);
+    }
+    break;
+
+  case CAMERA_WB_MODE_CLOUDY:
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, true);
+    }
+    if (hasAwbMode) {
+      ctrls.set(libcamera::controls::AwbMode, libcamera::controls::AwbCloudy);
+    }
+    break;
+
+  case CAMERA_WB_MODE_TUNGSTEN:
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, true);
+    }
+    if (hasAwbMode) {
+      ctrls.set(libcamera::controls::AwbMode, libcamera::controls::AwbTungsten);
+    }
+    break;
+
+  case CAMERA_WB_MODE_FLUORESCENT:
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, true);
+    }
+    if (hasAwbMode) {
+      ctrls.set(libcamera::controls::AwbMode,
+                libcamera::controls::AwbFluorescent);
+    }
+    break;
+
+  case CAMERA_WB_MODE_SHADE:
+  case CAMERA_WB_MODE_KELVIN: {
+    const int targetK =
+        (mode == CAMERA_WB_MODE_SHADE) ? 7500 : m_wbKelvin.load();
+    if (hasAwbEnable) {
+      ctrls.set(libcamera::controls::AwbEnable, false);
+    }
+    if (hasColourTemp) {
+      ctrls.set(libcamera::controls::ColourTemperature, targetK);
+    }
+    if (hasColourGains) {
+      float rGain = 2.00f;
+      float bGain = 1.56f;
+      kelvinToColourGains(targetK, rGain, bGain);
+      float gains[2] = {rGain, bGain};
+      ctrls.set(libcamera::controls::ColourGains, gains);
+    }
+    break;
+  }
+  }
+}
+
+void CameraStream::applyMeteringToControlList(
+    libcamera::ControlList &ctrls) const {
+  if (!m_camera) {
+    return;
+  }
+  const auto &camCtrls = m_camera->controls();
+  if (camCtrls.find(&libcamera::controls::AeMeteringMode) == camCtrls.end()) {
+    return;
+  }
+
+  const auto mode = static_cast<CameraMeteringMode>(m_meteringMode.load());
+  int32_t libcamMetering = libcamera::controls::MeteringMatrix;
+  switch (mode) {
+  case CAMERA_METERING_CENTRE_WEIGHTED:
+    libcamMetering = libcamera::controls::MeteringCentreWeighted;
+    break;
+  case CAMERA_METERING_SPOT:
+    libcamMetering = libcamera::controls::MeteringSpot;
+    break;
+  case CAMERA_METERING_MATRIX:
+  default:
+    libcamMetering = libcamera::controls::MeteringMatrix;
+    break;
+  }
+  ctrls.set(libcamera::controls::AeMeteringMode, libcamMetering);
+}
+
+void CameraStream::populateExposureStatus(
+    CameraExposureStatus *out_status) const {
+  if (!out_status) {
+    return;
+  }
+  out_status->ev_compensation = m_evCompensation.load();
+  out_status->iso_setting = m_isoSetting.load();
+  out_status->shutter_us_setting = m_shutterUsSetting.load();
+  out_status->actual_analogue_gain = m_actualGain.load();
+  out_status->actual_exposure_us = m_actualExposureUs.load();
+  out_status->wb_mode = static_cast<CameraWbMode>(m_wbMode.load());
+  out_status->wb_kelvin_setting = m_wbKelvin.load();
+  out_status->awb_locked = m_awbLocked.load();
+  out_status->actual_colour_temp_k = m_actualColourTempK.load();
+  out_status->actual_red_gain = m_actualRedGain.load();
+  out_status->actual_blue_gain = m_actualBlueGain.load();
+  out_status->metering_mode =
+      static_cast<CameraMeteringMode>(m_meteringMode.load());
+}
 
 void CameraStream::applyStartExposureControls(
     libcamera::ControlList &ctrls) const {
@@ -176,6 +366,10 @@ void CameraStream::applyStartExposureControls(
     std::int64_t frameDurationLimits[2] = {minFrameDur, maxFrameDur};
     ctrls.set(libcamera::controls::FrameDurationLimits, frameDurationLimits);
   }
+
+  // Apply White Balance and AE Metering Mode on camera start
+  applyWhiteBalanceToControlList(ctrls);
+  applyMeteringToControlList(ctrls);
 }
 
 void CameraStream::applyPendingExposureControls(libcamera::ControlList &ctrls) {
@@ -224,6 +418,24 @@ void CameraStream::applyPendingExposureControls(libcamera::ControlList &ctrls) {
       std::int64_t defaultFrameLimits[2] = {100, 33333};
       ctrls.set(libcamera::controls::FrameDurationLimits, defaultFrameLimits);
     }
+  }
+
+  // 4. Apply White Balance / AWB Lock when modified
+  int wbRem = m_wbPendingCount.load();
+  while (wbRem > 0 &&
+         !m_wbPendingCount.compare_exchange_weak(wbRem, wbRem - 1)) {
+  }
+  if (wbRem > 0) {
+    applyWhiteBalanceToControlList(ctrls);
+  }
+
+  // 5. Apply AE Metering Mode when modified
+  int metRem = m_meteringPendingCount.load();
+  while (metRem > 0 &&
+         !m_meteringPendingCount.compare_exchange_weak(metRem, metRem - 1)) {
+  }
+  if (metRem > 0) {
+    applyMeteringToControlList(ctrls);
   }
 }
 
@@ -538,6 +750,16 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
   if (const auto gain = metadata.get(libcamera::controls::AnalogueGain)) {
     m_actualGain = *gain;
   }
+  if (const auto colourTemp =
+          metadata.get(libcamera::controls::ColourTemperature)) {
+    m_actualColourTempK = *colourTemp;
+  }
+  if (const auto colourGains = metadata.get(libcamera::controls::ColourGains)) {
+    if (colourGains->size() >= 2) {
+      m_actualRedGain = (*colourGains)[0];
+      m_actualBlueGain = (*colourGains)[1];
+    }
+  }
 
   const auto &buffers = request->buffers();
 
@@ -591,13 +813,7 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
           m_capturedStillHeight = m_stillHeight;
           m_capturedStillStride = m_stillStride;
           m_capturedStillIsBGR = m_stillIsBGR;
-          m_capturedStillExpStatus.ev_compensation = m_evCompensation.load();
-          m_capturedStillExpStatus.iso_setting = m_isoSetting.load();
-          m_capturedStillExpStatus.shutter_us_setting =
-              m_shutterUsSetting.load();
-          m_capturedStillExpStatus.actual_analogue_gain = m_actualGain.load();
-          m_capturedStillExpStatus.actual_exposure_us =
-              m_actualExposureUs.load();
+          populateExposureStatus(&m_capturedStillExpStatus);
           m_stillFrameReady = true;
         }
         m_stillCv.notify_one();
@@ -713,6 +929,17 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
                   if (const auto gain =
                           meta.get(libcamera::controls::AnalogueGain)) {
                     self->m_actualGain = *gain;
+                  }
+                  if (const auto colourTemp =
+                          meta.get(libcamera::controls::ColourTemperature)) {
+                    self->m_actualColourTempK = *colourTemp;
+                  }
+                  if (const auto colourGains =
+                          meta.get(libcamera::controls::ColourGains)) {
+                    if (colourGains->size() >= 2) {
+                      self->m_actualRedGain = (*colourGains)[0];
+                      self->m_actualBlueGain = (*colourGains)[1];
+                    }
                   }
                   {
                     std::lock_guard<std::mutex> lk(*mtx);
@@ -1038,6 +1265,62 @@ bool camera_stream_set_shutter_speed(CameraStream *cam,
   return true;
 }
 
+bool camera_stream_set_wb_mode(CameraStream *cam, CameraWbMode mode) {
+  if (!cam)
+    return false;
+  int clamped = std::clamp(static_cast<int>(mode),
+                           static_cast<int>(CAMERA_WB_MODE_AUTO),
+                           static_cast<int>(CAMERA_WB_MODE_KELVIN));
+  cam->m_awbLocked = false;
+  cam->m_wbMode = clamped;
+  cam->m_wbPendingCount = 4;
+  return true;
+}
+
+bool camera_stream_set_wb_kelvin(CameraStream *cam, int kelvin) {
+  if (!cam)
+    return false;
+  int clamped = std::clamp(kelvin, 2500, 10000);
+  cam->m_wbKelvin = clamped;
+  cam->m_awbLocked = false;
+  cam->m_wbMode = static_cast<int>(CAMERA_WB_MODE_KELVIN);
+  cam->m_wbPendingCount = 4;
+  return true;
+}
+
+bool camera_stream_set_awb_lock(CameraStream *cam, bool locked) {
+  if (!cam)
+    return false;
+  if (locked) {
+    float curR = cam->m_actualRedGain.load();
+    float curB = cam->m_actualBlueGain.load();
+    if (curR <= 0.1f || curB <= 0.1f) {
+      int curK = cam->m_actualColourTempK.load();
+      if (curK < 2500 || curK > 10000) {
+        curK = cam->m_wbKelvin.load();
+      }
+      kelvinToColourGains(curK, curR, curB);
+    }
+    cam->m_lockedRedGain = curR;
+    cam->m_lockedBlueGain = curB;
+  }
+  cam->m_awbLocked = locked;
+  cam->m_wbPendingCount = 4;
+  return true;
+}
+
+bool camera_stream_set_metering_mode(CameraStream *cam,
+                                     CameraMeteringMode mode) {
+  if (!cam)
+    return false;
+  int clamped = std::clamp(static_cast<int>(mode),
+                           static_cast<int>(CAMERA_METERING_MATRIX),
+                           static_cast<int>(CAMERA_METERING_SPOT));
+  cam->m_meteringMode = clamped;
+  cam->m_meteringPendingCount = 4;
+  return true;
+}
+
 void camera_stream_get_exposure_status(const CameraStream *cam,
                                        CameraExposureStatus *out_status) {
   if (!out_status)
@@ -1046,11 +1329,7 @@ void camera_stream_get_exposure_status(const CameraStream *cam,
     std::memset(out_status, 0, sizeof(*out_status));
     return;
   }
-  out_status->ev_compensation = cam->m_evCompensation.load();
-  out_status->iso_setting = cam->m_isoSetting.load();
-  out_status->shutter_us_setting = cam->m_shutterUsSetting.load();
-  out_status->actual_analogue_gain = cam->m_actualGain.load();
-  out_status->actual_exposure_us = cam->m_actualExposureUs.load();
+  cam->populateExposureStatus(out_status);
 }
 
 bool camera_stream_trigger_af(CameraStream *cam) {

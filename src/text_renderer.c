@@ -21,7 +21,7 @@ static int g_guide_h_no_af = 0;
 static SDL_Texture *g_hud_texture = NULL;
 static int g_hud_w = 0;
 static int g_hud_h = 0;
-static char g_last_hud_text[320] = {0};
+static char g_last_hud_text[384] = {0};
 
 static const char *DEFAULT_FONT_PATHS[] = {
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -136,8 +136,8 @@ void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported) {
 
   const char *guide_text =
       af_supported
-          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [J]:Qual [R]:Reset [Q]:Quit"
-          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [J]:Qual [R]:Reset [Q]:Quit";
+          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB [K]:Temp [L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit"
+          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB [K]:Temp [L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit";
 
   // Lazily create and cache guide text texture on GPU
   if (!*tex_slot && g_font) {
@@ -222,15 +222,64 @@ void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
   const char *q_str =
       (quality_label && quality_label[0] != '\0') ? quality_label : "Fine (90%)";
 
-  char save_str[48] = "";
-  if (pending_saves > 0) {
-    snprintf(save_str, sizeof(save_str), "   |   [Saving: %d]", pending_saves);
+  char wb_str[64];
+  int quant_k = status->actual_colour_temp_k > 0
+                    ? ((status->actual_colour_temp_k + 50) / 100) * 100
+                    : 5500;
+  if (status->awb_locked) {
+    snprintf(wb_str, sizeof(wb_str), "WB: LOCK (%dK)", quant_k);
+  } else {
+    switch (status->wb_mode) {
+    case CAMERA_WB_MODE_DAYLIGHT:
+      snprintf(wb_str, sizeof(wb_str), "WB: Daylight");
+      break;
+    case CAMERA_WB_MODE_CLOUDY:
+      snprintf(wb_str, sizeof(wb_str), "WB: Cloudy");
+      break;
+    case CAMERA_WB_MODE_SHADE:
+      snprintf(wb_str, sizeof(wb_str), "WB: Shade");
+      break;
+    case CAMERA_WB_MODE_TUNGSTEN:
+      snprintf(wb_str, sizeof(wb_str), "WB: Tungsten");
+      break;
+    case CAMERA_WB_MODE_FLUORESCENT:
+      snprintf(wb_str, sizeof(wb_str), "WB: Fluoresc");
+      break;
+    case CAMERA_WB_MODE_KELVIN: {
+      int k_val = status->wb_kelvin_setting > 0 ? status->wb_kelvin_setting : 5500;
+      snprintf(wb_str, sizeof(wb_str), "WB: %dK [M]", k_val);
+      break;
+    }
+    case CAMERA_WB_MODE_AUTO:
+    default:
+      snprintf(wb_str, sizeof(wb_str), "WB: AWB (%dK)", quant_k);
+      break;
+    }
   }
 
-  char hud_text[320];
+  const char *met_str = "Met: Matrix";
+  switch (status->metering_mode) {
+  case CAMERA_METERING_CENTRE_WEIGHTED:
+    met_str = "Met: Center";
+    break;
+  case CAMERA_METERING_SPOT:
+    met_str = "Met: Spot";
+    break;
+  case CAMERA_METERING_MATRIX:
+  default:
+    met_str = "Met: Matrix";
+    break;
+  }
+
+  char save_str[48] = "";
+  if (pending_saves > 0) {
+    snprintf(save_str, sizeof(save_str), "  |  [Saving: %d]", pending_saves);
+  }
+
+  char hud_text[384];
   snprintf(hud_text, sizeof(hud_text),
-           "%s   |   %s   |   EV: %+.1f   |   JPG: %s%s", ss_str, iso_str,
-           status->ev_compensation, q_str, save_str);
+           "%s  |  %s  |  EV: %+.1f  |  %s  |  %s  |  JPG: %s%s", ss_str,
+           iso_str, status->ev_compensation, wb_str, met_str, q_str, save_str);
 
   // Re-rasterize only when text string changes
   if (strcmp(hud_text, g_last_hud_text) != 0 && g_font) {

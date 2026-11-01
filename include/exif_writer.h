@@ -31,6 +31,8 @@ typedef struct ExifMetadata {
   float ev_bias;         /* Exposure compensation in EV (-3.0 .. +3.0) */
   float f_number;        /* Lens aperture F-number (e.g. 1.8) */
   float focal_length_mm; /* Lens focal length in mm (e.g. 4.74) */
+  uint16_t metering_mode; /* Exif MeteringMode (0x9207): 2=Center, 3=Spot, 5=Pattern */
+  uint16_t light_source; /* Exif LightSource (0x9208): 0=Unknown, 1=Daylight, etc. */
   uint16_t wb_mode;      /* White balance mode: 0 = Auto, 1 = Manual */
   uint16_t exp_mode;     /* Exposure mode: 0 = Auto, 1 = Manual */
 } ExifMetadata;

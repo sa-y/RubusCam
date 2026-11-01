@@ -98,8 +98,10 @@ void exif_metadata_init(ExifMetadata *meta, const char *camera_model, int width,
     meta->focal_length_mm = 4.74f;
   }
 
-  meta->wb_mode = 0;  /* Auto White Balance */
-  meta->exp_mode = 0; /* Auto Exposure */
+  meta->metering_mode = 5; /* 5 = Pattern / Matrix */
+  meta->light_source = 0;  /* 0 = Unknown / Auto */
+  meta->wb_mode = 0;       /* Auto White Balance */
+  meta->exp_mode = 0;      /* Auto Exposure */
 
   if (exp_status) {
     meta->exposure_us = exp_status->actual_exposure_us > 0
@@ -114,6 +116,50 @@ void exif_metadata_init(ExifMetadata *meta, const char *camera_model, int width,
     meta->ev_bias = exp_status->ev_compensation;
     if (exp_status->iso_setting > 0 || exp_status->shutter_us_setting > 0) {
       meta->exp_mode = 1; /* Manual Exposure */
+    }
+
+    switch (exp_status->metering_mode) {
+    case CAMERA_METERING_CENTRE_WEIGHTED:
+      meta->metering_mode = 2; /* CenterWeightedAverage */
+      break;
+    case CAMERA_METERING_SPOT:
+      meta->metering_mode = 3; /* Spot */
+      break;
+    case CAMERA_METERING_MATRIX:
+    default:
+      meta->metering_mode = 5; /* Pattern / Matrix */
+      break;
+    }
+
+    if (exp_status->awb_locked || exp_status->wb_mode != CAMERA_WB_MODE_AUTO) {
+      meta->wb_mode = 1; /* Manual White Balance */
+    } else {
+      meta->wb_mode = 0; /* Auto White Balance */
+    }
+
+    switch (exp_status->wb_mode) {
+    case CAMERA_WB_MODE_DAYLIGHT:
+      meta->light_source = 1; /* Daylight */
+      break;
+    case CAMERA_WB_MODE_FLUORESCENT:
+      meta->light_source = 2; /* Fluorescent */
+      break;
+    case CAMERA_WB_MODE_TUNGSTEN:
+      meta->light_source = 3; /* Tungsten (incandescent light) */
+      break;
+    case CAMERA_WB_MODE_CLOUDY:
+      meta->light_source = 10; /* Cloudy weather */
+      break;
+    case CAMERA_WB_MODE_SHADE:
+      meta->light_source = 11; /* Shade */
+      break;
+    case CAMERA_WB_MODE_KELVIN:
+      meta->light_source = 255; /* Other light source */
+      break;
+    case CAMERA_WB_MODE_AUTO:
+    default:
+      meta->light_source = 0; /* Unknown / Auto */
+      break;
     }
   } else {
     meta->exposure_us = 16667;
@@ -291,8 +337,8 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
   /* IFD0 Entry 8: 0x8769 ExifIFDPointer */
   put_ifd_long(ifd0_entries + 8 * 12, 0x8769, (uint32_t)subifd_off);
 
-  /* 3. Exif SubIFD (13 entries, sorted by tag in ascending order) */
-  const uint16_t sub_count = 13;
+  /* 3. Exif SubIFD (15 entries, sorted by tag in ascending order) */
+  const uint16_t sub_count = 15;
   size_t sub_next_ptr_off = subifd_off + 2 + (size_t)sub_count * 12;
   if (sub_next_ptr_off + 4 > tiff_cap) {
     return 0;
@@ -353,31 +399,38 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
     return 0;
   }
 
-  /* SubIFD Entry 7: 0x920A FocalLength (RATIONAL) */
+  /* SubIFD Entry 7: 0x9207 MeteringMode (SHORT: 2=Center, 3=Spot, 5=Pattern) */
+  put_ifd_short(sub_entries + 7 * 12, 0x9207,
+                meta->metering_mode > 0 ? meta->metering_mode : 5U);
+
+  /* SubIFD Entry 8: 0x9208 LightSource (SHORT) */
+  put_ifd_short(sub_entries + 8 * 12, 0x9208, meta->light_source);
+
+  /* SubIFD Entry 9: 0x920A FocalLength (RATIONAL) */
   uint32_t fl_num = meta->focal_length_mm > 0.0f
                         ? (uint32_t)(meta->focal_length_mm * 100.0f + 0.5f)
                         : 474U;
-  if (!put_ifd_rational(tiff_base, tiff_cap, sub_entries + 7 * 12, 0x920A,
+  if (!put_ifd_rational(tiff_base, tiff_cap, sub_entries + 9 * 12, 0x920A,
                         fl_num, 100U, &data_off)) {
     return 0;
   }
 
-  /* SubIFD Entry 8: 0xA001 ColorSpace (1 = sRGB) */
-  put_ifd_short(sub_entries + 8 * 12, 0xA001, 1);
+  /* SubIFD Entry 10: 0xA001 ColorSpace (1 = sRGB) */
+  put_ifd_short(sub_entries + 10 * 12, 0xA001, 1);
 
-  /* SubIFD Entry 9: 0xA002 PixelXDimension (LONG) */
-  put_ifd_long(sub_entries + 9 * 12, 0xA002,
+  /* SubIFD Entry 11: 0xA002 PixelXDimension (LONG) */
+  put_ifd_long(sub_entries + 11 * 12, 0xA002,
                meta->width > 0 ? (uint32_t)meta->width : 0U);
 
-  /* SubIFD Entry 10: 0xA003 PixelYDimension (LONG) */
-  put_ifd_long(sub_entries + 10 * 12, 0xA003,
+  /* SubIFD Entry 12: 0xA003 PixelYDimension (LONG) */
+  put_ifd_long(sub_entries + 12 * 12, 0xA003,
                meta->height > 0 ? (uint32_t)meta->height : 0U);
 
-  /* SubIFD Entry 11: 0xA402 ExposureMode (0 = Auto, 1 = Manual) */
-  put_ifd_short(sub_entries + 11 * 12, 0xA402, meta->exp_mode);
+  /* SubIFD Entry 13: 0xA402 ExposureMode (0 = Auto, 1 = Manual) */
+  put_ifd_short(sub_entries + 13 * 12, 0xA402, meta->exp_mode);
 
-  /* SubIFD Entry 12: 0xA403 WhiteBalance (0 = Auto, 1 = Manual) */
-  put_ifd_short(sub_entries + 12 * 12, 0xA403, meta->wb_mode);
+  /* SubIFD Entry 14: 0xA403 WhiteBalance (0 = Auto, 1 = Manual) */
+  put_ifd_short(sub_entries + 14 * 12, 0xA403, meta->wb_mode);
 
   /* 4. Finalize APP1 Marker Header */
   size_t tiff_len = data_off;

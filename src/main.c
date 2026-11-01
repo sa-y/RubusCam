@@ -56,6 +56,36 @@ static const JpegQualityPreset JPEG_QUALITY_PRESETS[] = {
 static const int JPEG_QUALITY_PRESET_COUNT =
     (int)(sizeof(JPEG_QUALITY_PRESETS) / sizeof(JPEG_QUALITY_PRESETS[0]));
 
+typedef struct WbPreset {
+  CameraWbMode mode;
+  const char *name;
+} WbPreset;
+
+static const WbPreset WB_PRESETS[] = {
+    {CAMERA_WB_MODE_AUTO, "Auto (AWB)"},
+    {CAMERA_WB_MODE_DAYLIGHT, "Daylight (晴天 ~5500K)"},
+    {CAMERA_WB_MODE_CLOUDY, "Cloudy (曇天 ~6500K)"},
+    {CAMERA_WB_MODE_SHADE, "Shade (日陰 ~7500K)"},
+    {CAMERA_WB_MODE_TUNGSTEN, "Tungsten (白熱灯 ~2800K)"},
+    {CAMERA_WB_MODE_FLUORESCENT, "Fluorescent (蛍光灯 ~4000K)"},
+    {CAMERA_WB_MODE_KELVIN, "Manual K (色温度指定)"},
+};
+static const int WB_PRESET_COUNT =
+    (int)(sizeof(WB_PRESETS) / sizeof(WB_PRESETS[0]));
+
+typedef struct MeteringPreset {
+  CameraMeteringMode mode;
+  const char *name;
+} MeteringPreset;
+
+static const MeteringPreset METERING_PRESETS[] = {
+    {CAMERA_METERING_MATRIX, "Matrix (評価測光)"},
+    {CAMERA_METERING_CENTRE_WEIGHTED, "CenterWeighted (中央重点測光)"},
+    {CAMERA_METERING_SPOT, "Spot (スポット測光)"},
+};
+static const int METERING_PRESET_COUNT =
+    (int)(sizeof(METERING_PRESETS) / sizeof(METERING_PRESETS[0]));
+
 static void signal_handler(int signum) {
   (void)signum;
   printf("\n[-] 割り込みを検知しました。\n");
@@ -277,8 +307,12 @@ int main(int argc, char *argv[]) {
   printf(" [Up/Down, [/]] : 露出補正 (EV -3.0 ~ +3.0, 1/3ステップ)\n");
   printf(" [I / Shift+I]  : ISO感度切替 (Auto / 100 ~ 3200)\n");
   printf(" [S / Left/Rgt] : シャッター速度切替 (Auto / 1/2000s ~ 2.0s)\n");
+  printf(" [W / Shift+W]  : ホワイトバランス切替 (Auto / 晴天 / 曇天 / 日陰 / 白熱灯 / 蛍光灯 / 色温度K)\n");
+  printf(" [K / Shift+K]  : 色温度 (K値) 手動調整 (2500K ~ 10000K, 500Kステップ)\n");
+  printf(" [L]            : AWBロック切替 (現在の色合いでホワイトバランスを固定/解除)\n");
+  printf(" [M / Shift+M]  : 測光モード切替 (評価測光 Matrix / 中央重点 Center / スポット Spot)\n");
   printf(" [J / Shift+J]  : JPEG保存画質切替 (SuperFine 98%% / Fine 90%% / Normal 80%%)\n");
-  printf(" [R]            : 露出・画質設定をデフォルトにリセット\n");
+  printf(" [R]            : 露出・WB・測光・画質設定をデフォルトにリセット\n");
   printf(" [Q]            : アプリを終了\n");
   printf("=========================================\n");
 
@@ -325,10 +359,14 @@ int main(int argc, char *argv[]) {
 
   const uint32_t target_frame_time_ms = 1000 / 30; // ~30 FPS
 
-  // Exposure & JPEG quality control state indices
+  // Exposure, WB, Metering & JPEG quality control state indices
   int ev_step_index = 0; // -9 (-3.0 EV) to +9 (+3.0 EV) in 1/3 EV increments
   int iso_preset_index = 0;
   int shutter_preset_index = 0;
+  int wb_preset_index = 0;
+  int wb_kelvin_value = 5500;
+  bool awb_locked = false;
+  int metering_preset_index = 0;
   int quality_preset_index = 1; // Default: Fine (90%)
   g_active_jpeg_quality = JPEG_QUALITY_PRESETS[quality_preset_index].quality;
 
@@ -450,6 +488,71 @@ int main(int argc, char *argv[]) {
           break;
         }
 
+        case SDLK_w: {
+          if (shift_held) {
+            wb_preset_index =
+                (wb_preset_index - 1 + WB_PRESET_COUNT) % WB_PRESET_COUNT;
+          } else {
+            wb_preset_index = (wb_preset_index + 1) % WB_PRESET_COUNT;
+          }
+          awb_locked = false;
+          CameraWbMode wb_mode = WB_PRESETS[wb_preset_index].mode;
+          if (wb_mode == CAMERA_WB_MODE_KELVIN) {
+            camera_stream_set_wb_kelvin(camera, wb_kelvin_value);
+            printf("[-] ホワイトバランス: %s (%dK)\n",
+                   WB_PRESETS[wb_preset_index].name, wb_kelvin_value);
+          } else {
+            camera_stream_set_wb_mode(camera, wb_mode);
+            printf("[-] ホワイトバランス: %s\n",
+                   WB_PRESETS[wb_preset_index].name);
+          }
+          break;
+        }
+
+        case SDLK_k: {
+          if (shift_held) {
+            wb_kelvin_value -= 500;
+            if (wb_kelvin_value < 2500) {
+              wb_kelvin_value = 2500;
+            }
+          } else {
+            wb_kelvin_value += 500;
+            if (wb_kelvin_value > 10000) {
+              wb_kelvin_value = 10000;
+            }
+          }
+          wb_preset_index = WB_PRESET_COUNT - 1; /* CAMERA_WB_MODE_KELVIN */
+          awb_locked = false;
+          camera_stream_set_wb_kelvin(camera, wb_kelvin_value);
+          printf("[-] 色温度手動指定 (WB Kelvin): %dK\n", wb_kelvin_value);
+          break;
+        }
+
+        case SDLK_l: {
+          awb_locked = !awb_locked;
+          camera_stream_set_awb_lock(camera, awb_locked);
+          printf("[-] AWBロック: %s\n",
+                 awb_locked ? "ON (現在の色合いで固定)" : "OFF (解除)");
+          break;
+        }
+
+        case SDLK_m: {
+          if (shift_held) {
+            metering_preset_index =
+                (metering_preset_index - 1 + METERING_PRESET_COUNT) %
+                METERING_PRESET_COUNT;
+          } else {
+            metering_preset_index =
+                (metering_preset_index + 1) % METERING_PRESET_COUNT;
+          }
+          CameraMeteringMode met_mode =
+              METERING_PRESETS[metering_preset_index].mode;
+          camera_stream_set_metering_mode(camera, met_mode);
+          printf("[-] 測光モード: %s\n",
+                 METERING_PRESETS[metering_preset_index].name);
+          break;
+        }
+
         case SDLK_j: {
           if (shift_held) {
             quality_preset_index =
@@ -470,14 +573,21 @@ int main(int argc, char *argv[]) {
           ev_step_index = 0;
           iso_preset_index = 0;
           shutter_preset_index = 0;
+          wb_preset_index = 0;
+          wb_kelvin_value = 5500;
+          awb_locked = false;
+          metering_preset_index = 0;
           quality_preset_index = 1;
           g_active_jpeg_quality =
               JPEG_QUALITY_PRESETS[quality_preset_index].quality;
           camera_stream_set_ev(camera, 0.0f);
           camera_stream_set_iso(camera, 0);
           camera_stream_set_shutter_speed(camera, 0);
-          printf("[-] 露出・画質設定をリセットしました (EV: 0.0, ISO: Auto, SS: "
-                 "Auto, JPG: %s)\n",
+          camera_stream_set_wb_mode(camera, CAMERA_WB_MODE_AUTO);
+          camera_stream_set_awb_lock(camera, false);
+          camera_stream_set_metering_mode(camera, CAMERA_METERING_MATRIX);
+          printf("[-] 露出・WB・測光・画質設定をリセットしました (EV: 0.0, ISO: "
+                 "Auto, SS: Auto, WB: Auto, Met: Matrix, JPG: %s)\n",
                  JPEG_QUALITY_PRESETS[quality_preset_index].name);
           break;
         }

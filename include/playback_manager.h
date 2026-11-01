@@ -61,6 +61,8 @@ typedef struct {
   float ev_bias;
   float f_number;
   float focal_length_mm;
+  uint16_t metering_mode;
+  uint16_t light_source;
   uint16_t wb_mode;
 } PhotoMetadata;
 

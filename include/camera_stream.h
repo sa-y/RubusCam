@@ -81,7 +81,30 @@ bool camera_stream_get_latest_frame(CameraStream *cam, uint8_t *out_buffer,
                                     size_t buffer_size, uint64_t *out_sequence);
 
 /*
- * Exposure status containing both user settings and actual metadata values.
+ * White balance modes supported by CameraStream.
+ */
+typedef enum CameraWbMode {
+  CAMERA_WB_MODE_AUTO = 0,        /* Auto White Balance (AWB) */
+  CAMERA_WB_MODE_DAYLIGHT = 1,    /* Daylight (~5500K) */
+  CAMERA_WB_MODE_CLOUDY = 2,      /* Cloudy (~6500K) */
+  CAMERA_WB_MODE_SHADE = 3,       /* Shade (~7500K) */
+  CAMERA_WB_MODE_TUNGSTEN = 4,    /* Tungsten / Incandescent (~2800K) */
+  CAMERA_WB_MODE_FLUORESCENT = 5, /* Fluorescent (~4000K) */
+  CAMERA_WB_MODE_KELVIN = 6       /* Manual Color Temperature (2500K ~ 10000K) */
+} CameraWbMode;
+
+/*
+ * Auto-exposure metering modes supported by CameraStream.
+ */
+typedef enum CameraMeteringMode {
+  CAMERA_METERING_MATRIX = 0,          /* Matrix / Evaluative metering */
+  CAMERA_METERING_CENTRE_WEIGHTED = 1, /* Center-weighted metering */
+  CAMERA_METERING_SPOT = 2             /* Spot metering */
+} CameraMeteringMode;
+
+/*
+ * Exposure & white balance status containing both user settings and actual
+ * metadata values reported by the sensor / ISP.
  */
 typedef struct CameraExposureStatus {
   float ev_compensation;      /* User EV setting (-3.0f ~ +3.0f) */
@@ -89,6 +112,13 @@ typedef struct CameraExposureStatus {
   int32_t shutter_us_setting; /* User shutter speed in us (0 = Auto) */
   float actual_analogue_gain; /* Actual analogue gain reported by sensor */
   int32_t actual_exposure_us; /* Actual exposure time in us reported by sensor */
+  CameraWbMode wb_mode;       /* User WB mode setting */
+  int wb_kelvin_setting;      /* User manual color temperature in K (2500 ~ 10000) */
+  bool awb_locked;            /* True if AWB is locked at current color gains */
+  int32_t actual_colour_temp_k; /* Actual color temperature in K from metadata */
+  float actual_red_gain;      /* Actual red color gain from metadata */
+  float actual_blue_gain;     /* Actual blue color gain from metadata */
+  CameraMeteringMode metering_mode; /* User AE metering mode setting */
 } CameraExposureStatus;
 
 /*
@@ -111,6 +141,33 @@ bool camera_stream_set_iso(CameraStream *cam, int iso);
  */
 bool camera_stream_set_shutter_speed(CameraStream *cam,
                                      int32_t exposure_time_us);
+
+/*
+ * Set white balance mode (Auto, preset modes, or manual Kelvin).
+ * Clears AWB lock when changing WB mode.
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_wb_mode(CameraStream *cam, CameraWbMode mode);
+
+/*
+ * Set manual color temperature in Kelvin (clamped to 2500K .. 10000K) and
+ * switch WB mode to CAMERA_WB_MODE_KELVIN.
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_wb_kelvin(CameraStream *cam, int kelvin);
+
+/*
+ * Lock or unlock Auto White Balance (AWB) at the current color gains.
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_awb_lock(CameraStream *cam, bool locked);
+
+/*
+ * Set AE metering mode (Matrix, CentreWeighted, or Spot).
+ * Returns true on success, false on failure.
+ */
+bool camera_stream_set_metering_mode(CameraStream *cam,
+                                     CameraMeteringMode mode);
 
 /*
  * Retrieve current exposure settings and actual sensor metadata values.

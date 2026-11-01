@@ -269,6 +269,14 @@ static void parse_exif_ifd(const uint8_t *tiff_base, size_t tiff_len,
         meta->ev_bias = (float)num / (float)den;
         meta->has_exif = true;
       }
+    } else if (tag == 0x9207 && type == 3) {
+      /* MeteringMode (SHORT: 2=Center, 3=Spot, 5=Pattern) */
+      meta->metering_mode = read_u16(tiff_base + pos + 8, le);
+      meta->has_exif = true;
+    } else if (tag == 0x9208 && type == 3) {
+      /* LightSource (SHORT) */
+      meta->light_source = read_u16(tiff_base + pos + 8, le);
+      meta->has_exif = true;
     } else if (tag == 0x920A && type == 5 && val_offset + 8 <= tiff_len) {
       /* FocalLength (RATIONAL) */
       uint32_t num = read_u32(tiff_base + val_offset, le);
@@ -308,6 +316,23 @@ static void parse_jpeg_metadata(PlaybackManager *pm, const DcfMediaEntry *entry,
                 ? rec->exp_status.iso_setting
                 : (int)(rec->exp_status.actual_analogue_gain * 100.0f + 0.5f);
         out_meta->ev_bias = rec->exp_status.ev_compensation;
+        out_meta->wb_mode =
+            (rec->exp_status.awb_locked ||
+             rec->exp_status.wb_mode != CAMERA_WB_MODE_AUTO)
+                ? 1
+                : 0;
+        switch (rec->exp_status.metering_mode) {
+        case CAMERA_METERING_CENTRE_WEIGHTED:
+          out_meta->metering_mode = 2;
+          break;
+        case CAMERA_METERING_SPOT:
+          out_meta->metering_mode = 3;
+          break;
+        case CAMERA_METERING_MATRIX:
+        default:
+          out_meta->metering_mode = 5;
+          break;
+        }
         snprintf(out_meta->camera_model, sizeof(out_meta->camera_model),
                  "RubusCam (libcamera)");
         break;
@@ -1307,11 +1332,29 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
                pm->current_meta.f_number, pm->current_meta.focal_length_mm);
     }
     const char *wb_label = pm->current_meta.wb_mode == 1 ? "Manual" : "Auto";
+    if (pm->current_meta.light_source == 1) {
+      wb_label = "Daylight";
+    } else if (pm->current_meta.light_source == 2) {
+      wb_label = "Fluoresc";
+    } else if (pm->current_meta.light_source == 3) {
+      wb_label = "Tungsten";
+    } else if (pm->current_meta.light_source == 10) {
+      wb_label = "Cloudy";
+    } else if (pm->current_meta.light_source == 11) {
+      wb_label = "Shade";
+    }
+
+    const char *met_label = "Matrix";
+    if (pm->current_meta.metering_mode == 2) {
+      met_label = "Center";
+    } else if (pm->current_meta.metering_mode == 3) {
+      met_label = "Spot";
+    }
 
     snprintf(line3, sizeof(line3),
-             "Exif: SS %s  |  ISO %s  |  EV %+.1f%s  |  WB %s  |  Zoom %.0fx",
+             "Exif: SS %s  |  ISO %s  |  EV %+.1f%s  |  WB %s  |  Met %s  |  Zoom %.0fx",
              ss_buf, iso_buf, pm->current_meta.ev_bias, optics_buf, wb_label,
-             ZOOM_FACTORS[pm->zoom_step_index]);
+             met_label, ZOOM_FACTORS[pm->zoom_step_index]);
 
     int w1 = 0, w2 = 0, w3 = 0, lh = 20;
     text_renderer_measure_text(line1, &w1, &lh);
