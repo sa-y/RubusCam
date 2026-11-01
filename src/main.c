@@ -78,13 +78,13 @@ static void calculate_viewport_rect(int src_w, int src_h, int win_w, int win_h,
   if (win_aspect > src_aspect) {
     // Window is wider than camera: add black bars on left/right (pillarbox)
     out_rect->h = win_h;
-    out_rect->w = (int)(win_h * src_aspect);
+    out_rect->w = (int)((float)win_h * src_aspect + 0.5f);
     out_rect->x = (win_w - out_rect->w) / 2;
     out_rect->y = 0;
   } else {
     // Window is taller than camera: add black bars on top/bottom (letterbox)
     out_rect->w = win_w;
-    out_rect->h = (int)(win_w / src_aspect);
+    out_rect->h = (int)((float)win_w / src_aspect + 0.5f);
     out_rect->x = 0;
     out_rect->y = (win_h - out_rect->h) / 2;
   }

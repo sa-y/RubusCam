@@ -32,6 +32,8 @@ struct MappedPlane {
 // C++ internal representation for CameraStream
 struct CameraStream {
   // Viewfinder (preview) stream properties
+  int m_requestedVfWidth = 480;
+  int m_requestedVfHeight = 320;
   int m_width = 480;
   int m_height = 320;
   int m_stride = 0;
@@ -118,6 +120,41 @@ void CameraStream::applyStartExposureControls(
   const float ev = m_evCompensation.load();
   const int iso = m_isoSetting.load();
   const int32_t shutterUs = m_shutterUsSetting.load();
+
+  // Ensure full sensor Field of View (ScalerCrop) matching the still capture
+  // aspect ratio so preview and captured photos cover the exact same scene area
+  if (m_camera) {
+    if (const auto maxCropOpt = m_camera->properties().get(
+            libcamera::properties::ScalerCropMaximum)) {
+      libcamera::Rectangle crop = *maxCropOpt;
+      if (crop.width > 0 && crop.height > 0 && m_stillWidth > 0 &&
+          m_stillHeight > 0) {
+        const double stillAspect = static_cast<double>(m_stillWidth) /
+                                   static_cast<double>(m_stillHeight);
+        const double sensorAspect =
+            static_cast<double>(crop.width) / static_cast<double>(crop.height);
+        if (sensorAspect > stillAspect) {
+          unsigned int newW =
+              static_cast<unsigned int>(crop.height * stillAspect + 0.5) & ~1u;
+          if (newW > 0 && newW < crop.width) {
+            crop.x += static_cast<int>((crop.width - newW) / 2);
+            crop.width = newW;
+          }
+        } else if (stillAspect > sensorAspect) {
+          unsigned int newH =
+              static_cast<unsigned int>(crop.width / stillAspect + 0.5) & ~1u;
+          if (newH > 0 && newH < crop.height) {
+            crop.y += static_cast<int>((crop.height - newH) / 2);
+            crop.height = newH;
+          }
+        }
+      }
+      if (m_camera->controls().find(&libcamera::controls::ScalerCrop) !=
+          m_camera->controls().end()) {
+        ctrls.set(libcamera::controls::ScalerCrop, crop);
+      }
+    }
+  }
 
   // Always apply EV compensation on camera start
   ctrls.set(libcamera::controls::ExposureValue, ev);
@@ -297,16 +334,47 @@ bool CameraStream::configureDualOrSingleStream() {
       targetStillW = probeConfig->at(0).size.width;
       targetStillH = probeConfig->at(0).size.height;
     } else {
-      targetStillW = m_width;
-      targetStillH = m_height;
+      targetStillW = m_requestedVfWidth > 0 ? m_requestedVfWidth : m_width;
+      targetStillH = m_requestedVfHeight > 0 ? m_requestedVfHeight : m_height;
+    }
+  }
+
+  // Fit Viewfinder resolution inside the requested preview bounding box
+  // (m_requestedVfWidth x m_requestedVfHeight) while matching the exact aspect
+  // ratio of StillCapture so ISP never crops the preview frame.
+  int maxVfW = m_requestedVfWidth > 0 ? m_requestedVfWidth : m_width;
+  int maxVfH = m_requestedVfHeight > 0 ? m_requestedVfHeight : m_height;
+  int targetVfW = maxVfW;
+  int targetVfH = maxVfH;
+  if (targetStillW > 0 && targetStillH > 0 && maxVfW > 0 && maxVfH > 0) {
+    const double stillAspect =
+        static_cast<double>(targetStillW) / static_cast<double>(targetStillH);
+    const double boxAspect =
+        static_cast<double>(maxVfW) / static_cast<double>(maxVfH);
+    if (boxAspect > stillAspect) {
+      targetVfH = maxVfH;
+      targetVfW = static_cast<int>(maxVfH * stillAspect + 0.5);
+    } else {
+      targetVfW = maxVfW;
+      targetVfH = static_cast<int>(maxVfW / stillAspect + 0.5);
+    }
+    // Align to even pixel dimensions for ISP/DMA compatibility
+    targetVfW = std::max(2, (targetVfW + 1) & ~1);
+    targetVfH = std::max(2, (targetVfH + 1) & ~1);
+    if (targetVfW > targetStillW) {
+      targetVfW = targetStillW;
+    }
+    if (targetVfH > targetStillH) {
+      targetVfH = targetStillH;
     }
   }
 
   // Step 2: Try Dual-Stream Configuration ({ StillCapture, Viewfinder })
   // Note: On Raspberry Pi ISP (vc4/pisp), the higher-resolution stream must be
   // Output 0.
-  bool canTryDual = (targetStillW >= m_width && targetStillH >= m_height) &&
-                    (targetStillW > m_width || targetStillH > m_height);
+  bool canTryDual =
+      (targetStillW >= targetVfW && targetStillH >= targetVfH) &&
+      (targetStillW > targetVfW || targetStillH > targetVfH);
 
   if (canTryDual) {
     auto dualConfig =
@@ -322,8 +390,8 @@ bool CameraStream::configureDualOrSingleStream() {
           1; // Minimize CMA footprint for on-demand still capture
 
       libcamera::StreamConfiguration &vfCfg = dualConfig->at(1);
-      vfCfg.size.width = m_width;
-      vfCfg.size.height = m_height;
+      vfCfg.size.width = targetVfW;
+      vfCfg.size.height = targetVfH;
       vfCfg.pixelFormat = libcamera::formats::BGR888;
       vfCfg.bufferCount = 4;
 
@@ -400,8 +468,8 @@ bool CameraStream::configureDualOrSingleStream() {
   }
 
   libcamera::StreamConfiguration &streamConfig = m_config->at(0);
-  streamConfig.size.width = m_width;
-  streamConfig.size.height = m_height;
+  streamConfig.size.width = targetVfW;
+  streamConfig.size.height = targetVfH;
   streamConfig.pixelFormat = libcamera::formats::BGR888;
   streamConfig.bufferCount = 4;
 
@@ -610,6 +678,8 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
 
     if (status != libcamera::CameraConfiguration::Invalid &&
         m_camera->configure(stillConfig.get()) == 0) {
+      m_stillWidth = sc.size.width;
+      m_stillHeight = sc.size.height;
       libcamera::Stream *stillStream = sc.stream();
       auto allocator =
           std::make_unique<libcamera::FrameBufferAllocator>(m_camera);
@@ -740,8 +810,10 @@ bool camera_stream_init(CameraStream *cam, int width, int height) {
   if (!cam)
     return false;
 
-  cam->m_width = width;
-  cam->m_height = height;
+  cam->m_requestedVfWidth = width > 0 ? width : 1024;
+  cam->m_requestedVfHeight = height > 0 ? height : 600;
+  cam->m_width = cam->m_requestedVfWidth;
+  cam->m_height = cam->m_requestedVfHeight;
 
   // 1. Initialize CameraManager
   cam->m_cameraManager = std::make_unique<libcamera::CameraManager>();
