@@ -20,6 +20,8 @@ Raspberry Pi 上で **SDL2**、**SDL2_image**、**SDL2_ttf**、および **libca
 - **非同期キャプチャ & バックグラウンド保存キュー**: シャッター押下時にプレビュー描画をブロックせず、メモリ上の RAW フレームから即座にクイックレビューを表示しつつ、JPEG エンコード・Exif 埋め込み・SDカード書き込みを専用ワーカースレッドで非同期処理。
 - **Exif 2.3 メタデータ埋め込み**: 撮影日時、カメラモデル名、シャッター速度、F値、ISO感度、露出補正値、焦点距離、ホワイトバランスを Exif APP1 (`0xFFE1`) ヘッダーとして自動記録。
 - **JPEG 保存品質設定**: `J` キーで `SuperFine (98%)` / `Fine (90%)` / `Normal (80%)` の3段階クオリティをワンタッチ切り替え。
+- **露出・ホワイトバランス・測光モード制御**: 露出補正 (`-3.0〜+3.0 EV`)、ISO 感度 (`Auto / 100〜3200`)、シャッター速度 (`Auto / 1/2000s〜2.0s`)、ホワイトバランス（AWB / 各種プリセット / 色温度手動指定 `2500K〜10000K` / AWBロック）、測光モード（評価 / 中央重点 / スポット）の切り替えに対応。
+- **クイックレビュー & 再生・ギャラリーモード**: 撮影直後の自動プレビュー表示（即時破棄・保護対応）に加え、`P` キーで再生モードへ切り替え、Exif 詳細情報表示、デジタル拡大・パン（`2x / 4x / 8x` + PiP ナビマップ）、`3x3 / 4x4` サムネイル一覧、プロテクト保護・削除が可能。
 - **DCF 準拠のファイル命名・ディレクトリ管理**: カメラ業界標準の `DCIM/100_PICA/IMG_0001.JPG` 形式（または `--date-dir` 指定で日付別 `DCIM/YYYYMMDD/IMG_0001.JPG`）で自動連番保存し、撮影前にストレージ残容量を事前確認。
 - **シグナルハンドリング**: `Ctrl + C` などの割り込み時も、カメラストリームと SDL リソースを安全に解放して終了。
 
@@ -57,7 +59,7 @@ cmake -B build
 cmake --build build
 ```
 
-ビルド完了後、`build/rubscam` が生成されます。
+ビルド完了後、`build/rubuscam` が生成されます。
 
 ### 方法 2: Makefile を使用する場合 (シンプルビルド)
 
@@ -65,7 +67,7 @@ cmake --build build
 make
 ```
 
-`build/RubusCam` に実行ファイルが生成されます。
+`build/rubuscam` に実行ファイルが生成されます。
 
 ---
 
@@ -75,13 +77,15 @@ make
 
 ```bash
 # デフォルト起動 (DCIM/100_PICA/IMG_0001.JPG 形式)
-./build/rubscam
+./build/rubuscam
 
 # 日付別フォルダモード (DCIM/YYYYMMDD/IMG_0001.JPG 形式) で起動する場合
-./build/rubscam --date-dir
+./build/rubuscam --date-dir
 ```
 
 ### キーボード操作
+
+#### 撮影（ライブビュー）モード
 
 | キー | 動作 |
 | :--- | :--- |
@@ -91,35 +95,68 @@ make
 | **`Up` / `Down`** または **`]` / `[`** | 露出補正 (`-3.0 EV` 〜 `+3.0 EV`、`1/3 EV` ステップ) |
 | **`I`** / **`Shift + I`** | ISO感度を切り替え (`Auto / 100 / 200 / 400 / 800 / 1600 / 3200`) |
 | **`S`** / **`Shift + S`** または **`Right` / `Left`** | シャッタースピードを切り替え (`Auto / 1/2000s 〜 2.0s`) |
+| **`W`** / **`Shift + W`** | ホワイトバランスを切り替え (`Auto / Daylight / Cloudy / Shade / Tungsten / Fluorescent / Manual K`) |
+| **`K`** / **`Shift + K`** | 色温度 (K値) を手動調整 (`2500K 〜 10000K`、`500K` ステップ) |
+| **`L`** | AWBロックを切り替え (現在の色合いでホワイトバランスを固定 / 解除) |
+| **`M`** / **`Shift + M`** | 測光モードを切り替え (`評価測光 Matrix / 中央重点 CenterWeighted / スポット Spot`) |
 | **`J`** / **`Shift + J`** | JPEG保存品質を切り替え (`SuperFine 98% / Fine 90% / Normal 80%`) |
-| **`R`** | 露出・画質設定をすべてリセット (`EV: 0.0`, `ISO: Auto`, `SS: Auto`, `JPG: Fine 90%`) |
+| **`R`** | 露出・WB・測光・画質設定をすべてデフォルトにリセット (`EV: 0.0`, `ISO: Auto`, `SS: Auto`, `WB: Auto`, `Met: Matrix`, `JPG: Fine 90%`) |
 | **`Q`** | アプリケーションを終了します |
 | **`Ctrl + C`** | コンソールからの割り込み終了（リソースを安全に解放して終了します） |
+
+#### クイックレビュー（撮影直後プレビュー）モード
+
+| キー | 動作 |
+| :--- | :--- |
+| **`Delete` / `Backspace` / `D`** | 直前に撮影した画像を即座にキャンセル・削除してライブビューへ戻ります |
+| **`L`** | 直前に撮影した画像のプロテクト（保護）を ON / OFF します |
+| **`P`** / **`Left` / `Right`** / **`Z` / `+`** | そのまま再生・ギャラリーモードへ移行します |
+| **`Space` / `Enter` / `Esc`** | クイックレビューを終了して即座にライブビューへ戻ります |
+
+#### 再生・ギャラリーモード
+
+| キー | 動作 |
+| :--- | :--- |
+| **`Left` / `Right`** | 前後の写真へ移動（ズーム中は左右パン移動、グリッド表示中はカーソル移動） |
+| **`Up` / `Down`** | ズーム中の上下パン移動、グリッド表示中の上下カーソル移動 |
+| **`PageUp` / `PageDown`** | グリッド表示中のページ送り / ページ戻し |
+| **`Z`** または **`+` / `-`** | 拡大ズーム切り替え (`1x` ⇔ `2x` ⇔ `4x` ⇔ `8x`、`1x` から `-` で 3x3 グリッドへ移行) |
+| **`0`** | ズーム倍率を `1x`（全体表示）にリセット |
+| **`G`** | 表示モードを切り替え (`1枚表示` → `3x3 グリッド` → `4x4 グリッド`) |
+| **`I`** | 詳細 Exif / メタデータ情報パネルの表示 / 非表示を切り替え |
+| **`L`** | 選択中の画像のプロテクト（読み取り専用・誤削除防止）を ON / OFF |
+| **`Delete` / `Backspace` / `D`** | 削除確認ダイアログを開く（`1枚削除` / `未保護の全写真を削除` / `キャンセル`） |
+| **`P` / `Space` / `Esc`** | ライブビュー（撮影モード）へ戻ります（ズーム中・グリッド表示中の `Esc` は1枚等倍表示へ戻ります） |
 
 ---
 
 ## ディレクトリ構成
 
 ```text
-picamera/
-├── CMakeLists.txt       # CMake ビルド設定 (C & C++ 混在ビルド)
-├── Makefile             # 簡易 make ビルド設定 (gcc + g++)
-├── LICENSE              # MIT ライセンス
-├── README.md            # 本ドキュメント
-├── TODO.md              # 機能拡張ロードマップ
-├── fonts/               # オーバーレイ表示用バンドル TrueType フォント (IPAex)
+RubusCam/
+├── CMakeLists.txt             # CMake ビルド設定 (C & C++ 混在ビルド)
+├── Makefile                   # 簡易 make ビルド設定 (gcc + g++)
+├── LICENSE                    # MIT ライセンス
+├── README.md                  # 本ドキュメント
+├── TODO.md                    # 機能拡張ロードマップ
 ├── include/
-│   ├── camera_stream.h  # libcamera ラッパー関数の C 向け公開ヘッダー (extern "C")
-│   ├── dcf_storage.h    # DCF 準拠ディレクトリ・連番ファイル管理・残容量確認ヘッダー
-│   ├── font8x16.h       # 8x16 ビットマップフォント定義ヘッダー
-│   ├── text_renderer.h  # SDL2_ttf 用テキスト・ガイド描画関数宣言
-│   └── stb_image_write.h# JPEG 保存用ヘッダーライブラリ
+│   ├── async_save_queue.h     # 非同期 JPEG エンコード & バックグラウンド保存キュー宣言
+│   ├── camera_stream.h        # libcamera ラッパー関数の C 向け公開ヘッダー (extern "C")
+│   ├── dcf_storage.h          # DCF 準拠ディレクトリ・連番ファイル管理・残容量確認・メディア走査ヘッダー
+│   ├── exif_writer.h          # Exif 2.3 (APP1) セグメント生成・JPEG 注入ヘッダー
+│   ├── font8x16.h             # 8x16 ビットマップフォント定義ヘッダー
+│   ├── playback_manager.h     # クイックレビュー・再生ギャラリー・ズーム/グリッド/削除管理ヘッダー
+│   ├── stb_image_write.h      # 画像書き出し用ヘッダーライブラリ
+│   └── text_renderer.h        # SDL2_ttf 用テキスト・HUD・パネル描画関数宣言
 └── src/
-    ├── main.c           # アプリケーションエントリポイント & SDL2 イベント/レンダリングループ (C言語)
-    ├── camera_stream.cpp# libcamera 制御実装 & extern "C" ラッパー関数群 (C++)
-    ├── dcf_storage.c    # DCF フォルダ自動生成・連番採番・statvfs 残容量チェック実装 (C言語)
-    ├── font8x16.c       # 8x16 ビットマップフォントデータ (C言語)
-    └── text_renderer.c  # SDL2_ttf ガイドオーバーレイ描画実装 (C言語)
+    ├── main.c                 # アプリケーションエントリポイント & SDL2 イベント/レンダリングループ (C言語)
+    ├── async_save_queue.c     # 非同期保存ワーカースレッド & キュー管理実装 (C言語)
+    ├── camera_stream.cpp      # libcamera 制御実装 & extern "C" ラッパー関数群 (C++)
+    ├── dcf_storage.c          # DCF フォルダ自動生成・連番採番・statvfs 残容量チェック・ファイル削除/保護実装 (C言語)
+    ├── exif_writer.c          # TIFF IFD / Exif 2.3 バイナリ構築 & アトミック保存実装 (C言語)
+    ├── font8x16.c             # 8x16 ビットマップフォントデータ (C言語)
+    ├── playback_manager.c     # 再生モード・クイックレビュー・Exif パーサ・サムネイル一覧実装 (C言語)
+    └── text_renderer.c        # SDL2_ttf ガイド・露出 HUD オーバーレイ描画実装 (C言語)
 ```
 
 ---
@@ -138,6 +175,8 @@ bool camera_stream_start(CameraStream *cam);
 void camera_stream_stop(CameraStream *cam);
 
 bool camera_stream_is_af_supported(const CameraStream *cam);
+const char *camera_stream_get_model_name(const CameraStream *cam);
+
 int camera_stream_get_width(const CameraStream *cam);
 int camera_stream_get_height(const CameraStream *cam);
 int camera_stream_get_stride(const CameraStream *cam);
@@ -148,10 +187,24 @@ int camera_stream_get_still_width(const CameraStream *cam);
 int camera_stream_get_still_height(const CameraStream *cam);
 
 bool camera_stream_get_latest_frame(CameraStream *cam, uint8_t *out_buffer, size_t buffer_size, uint64_t *out_sequence);
+
+bool camera_stream_set_ev(CameraStream *cam, float ev);
+bool camera_stream_set_iso(CameraStream *cam, int iso);
+bool camera_stream_set_shutter_speed(CameraStream *cam, int32_t exposure_time_us);
+bool camera_stream_set_wb_mode(CameraStream *cam, CameraWbMode mode);
+bool camera_stream_set_wb_kelvin(CameraStream *cam, int kelvin);
+bool camera_stream_set_awb_lock(CameraStream *cam, bool locked);
+bool camera_stream_set_metering_mode(CameraStream *cam, CameraMeteringMode mode);
+void camera_stream_get_exposure_status(const CameraStream *cam, CameraExposureStatus *out_status);
+
 bool camera_stream_trigger_af(CameraStream *cam);
 
 typedef bool (*CameraStillSaveCallback)(const char *filename, const uint8_t *data, int width, int height, int stride, bool is_bgr);
 bool camera_stream_capture_still(CameraStream *cam, const char *filename, CameraStillSaveCallback save_cb);
+
+bool camera_stream_request_still(CameraStream *cam);
+bool camera_stream_is_still_pending(const CameraStream *cam);
+bool camera_stream_poll_captured_still(CameraStream *cam, CameraCapturedStill *out_still);
 ```
 
 ---

@@ -9,8 +9,11 @@
 ## 目次
 
 1. [現在の実装状況 (現状サマリー)](#現在の実装状況-現状サマリー)
-2. [開発フェーズ概要](#開発フェーズ概要)
-3. [機能一覧 & TODO リスト](#機能一覧--todo-リスト)
+2. [コードレビュー改善課題 (優先対応)](#コードレビュー改善課題-優先対応)
+   - [1. バグ・潜在的な不具合 (Bugs & Correctness)](#1-バグ潜在的な不具合-bugs--correctness)
+   - [2. パフォーマンス・メモリ・SDカード寿命の改善 (Performance & Resource Usage)](#2-パフォーマンスメモリsdカード寿命の改善-performance--resource-usage)
+3. [開発フェーズ概要](#開発フェーズ概要)
+4. [機能一覧 & TODO リスト](#機能一覧--todo-リスト)
    - [Phase 1: 静止画キャプチャ・画質パイプライン強化 (最優先)](#phase-1-静止画キャプチャ画質パイプライン強化-最優先)
    - [Phase 2: 露出・ホワイトバランス・光学制御 (手動・自動設定)](#phase-2-露出ホワイトバランス光学制御-手動自動設定)
    - [Phase 3: ビューファインダー・構図支援・OSD (HUD)](#phase-3-ビューファインダー構図支援osd-hud)
@@ -19,7 +22,7 @@
    - [Phase 6: ハードウェア連携・電源・組み込みDSC化](#phase-6-ハードウェア連携電源組み込みdsc化)
    - [Phase 7: システム基盤・グラフィックス近代化 (SDL2/3)](#phase-7-システム基盤グラフィックス近代化-sdl23)
    - [Phase 8: ネットワーク・スマート機能 (拡張)](#phase-8-ネットワークスマート機能-拡張)
-4. [推奨ハードウェア構成例](#推奨ハードウェア構成例)
+5. [推奨ハードウェア構成例](#推奨ハードウェア構成例)
 
 ---
 
@@ -36,6 +39,51 @@
 - [x] **ホワイトバランス & 測光モード制御**: AWB / 晴天 / 曇天 / 日陰 / 白熱灯 / 蛍光灯 / 色温度手動指定 (`2500K〜10000K`) / AWBロック、および測光モード切替 (`評価測光 Matrix / 中央重点 Center / スポット Spot`)
 - [x] **再生・ギャラリー・メディア管理**: 撮影直後プレビュー (Quick Review)、再生モード切替・Exif/メタデータ表示、デジタル拡大・パン (2x/4x/8x + PiP マップ)、3x3/4x4 サムネイル一覧、プロテクト保護・削除機能
 - [x] **シグナルハンドリング**: `Ctrl + C` による安全なリソース解放
+
+---
+
+## コードレビュー改善課題 (優先対応)
+
+ソースコード全体のレビューにより特定された、バグ修正およびパフォーマンス・リソース効率の改善項目です。
+
+### 1. バグ・潜在的な不具合 (Bugs & Correctness)
+
+- [ ] **日本語 UI テキストの文字化け対策（CJK フォント対応または英語統一）** `[優先度: 高]` `[難易度: 易]`
+  - **対象**: `src/text_renderer.c` (`DEFAULT_FONT_PATHS`)、`src/playback_manager.c` (`render_delete_dialog`, `playback_manager_render`, `set_toast`)
+  - **内容**: `DEFAULT_FONT_PATHS` に欧文フォントのみが指定されているため、削除確認ダイアログ・クイックレビュー下部ガイド・トースト通知に含まれる日本語が豆腐（□）になる問題を解消する。日本語対応フォント（`NotoSansCJK`, `fonts-japanese-gothic.ttf` 等）を探索リストの先頭に追加するか、UI 表示文字列を英語に統一する。
+- [ ] **非同期保存キャンセル待機時のデッドロック／遅延リスクの修正** `[優先度: 高]` `[難易度: 易]`
+  - **対象**: `src/async_save_queue.c` (`async_save_queue_cancel_or_delete`, `save_worker_thread_main`)
+  - **内容**: ワーカースレッドがエンコード中の画像をクイックレビューから即時破棄する際、`q->count > 0`（後続ジョブあり）だと `cond_idle` が broadcast されず、後続ジョブがすべて完了するまでメインスレッドが待機してしまう問題を修正する（1ジョブ完了ごとに `pthread_cond_broadcast(&q->cond_idle)` を呼ぶ）。
+- [ ] **シグナルハンドラ内の非同期シグナル安全化 (`printf` の排除)** `[優先度: 高]` `[難易度: 易]`
+  - **対象**: `src/main.c` (`signal_handler`)
+  - **内容**: 非同期シグナル安全（async-signal-safe）ではない `printf` をシグナルハンドラから除去し、ロック競合によるデッドロックを防止する（`g_running = 0;` のみ、または `write(STDERR_FILENO, ...)` に変更）。
+- [ ] **シャッター速度を Auto / 高速に戻した際の `FrameDurationLimits` 下限値の適正化** `[優先度: 中]` `[難易度: 易]`
+  - **対象**: `src/camera_stream.cpp` (`applyStartExposureControls`, `applyPendingExposureControls`)
+  - **内容**: `shutterUs <= 33333` または Auto 復帰時に `FrameDurationLimits` を `{100, 33333}`（最大 10,000fps 許容）としているため、センサーが高フレームレートで不要なフレームを送出し CPU コピー負荷・発熱が増大する。プレビューのターゲット FPS に合わせて `{33333, 33333}` 等に適正化する。
+- [ ] **`SDL_GetTicks()` の 32bit ラップアラウンド比較の修正** `[優先度: 低]` `[難易度: 易]`
+  - **対象**: `src/playback_manager.c` (`playback_manager_render_toast`)
+  - **内容**: `now >= pm->toast_expire_ms` の単純大小比較を `SDL_TICKS_PASSED(now, pm->toast_expire_ms)`（または経過時間差分比較）に統一する。
+- [ ] **既存 Exif 付き JPEG への再注入時の APP1 セグメント重複防止** `[優先度: 低]` `[難易度: 易]`
+  - **対象**: `src/exif_writer.c` (`exif_write_jpeg_with_app1`, `exif_inject_into_jpeg_file`)
+  - **内容**: SOI (`0xFFD8`) 直後に無条件で APP1 を挿入すると既存 Exif を持つ JPEG で APP1 が二重になるため、既存の Exif APP1 セグメントが存在する場合はスキップ・置換するように改善する。
+
+### 2. パフォーマンス・メモリ・SDカード寿命の改善 (Performance & Resource Usage)
+
+- [ ] **非同期保存時の二重ディスク書き込みの解消（オンメモリ JPEG エンコード化）** `[優先度: 高]` `[難易度: 並]`
+  - **対象**: `src/async_save_queue.c` (`encode_and_save_job`)、`src/exif_writer.c` (`exif_write_jpeg_with_app1`)
+  - **内容**: 現在の「`IMG_SaveJPG` で `.enc.tmp` に書き出し → メモリに再読み込み → Exif APP1 を付与して `.tmp` に再書き出し → `rename`」という二重書き込みを改め、`SDL_RWops` + `IMG_SaveJPG_RW()` でメモリバッファへ直接 JPEG エンコードしてから 1 回のファイル書き込みで完結させることで、SDカードの摩耗半減と保存速度向上を実現する。
+- [ ] **再生モード・グリッド表示での文字列テクスチャ生成キャッシュ導入** `[優先度: 高]` `[難易度: 並]`
+  - **対象**: `src/text_renderer.c` (`text_renderer_draw_text`, `text_renderer_draw_badge`)、`src/playback_manager.c` (`render_single_view`, `render_grid_view`)
+  - **内容**: 再生モード（特に 4x4 グリッド表示中）に毎フレーム最大 30 回以上実行されている `TTF_RenderUTF8_Blended` & `SDL_CreateTextureFromSurface` / `SDL_DestroyTexture` をキャッシュ化し、CPU/GPU 負荷を削減する。
+- [ ] **クイックレビュー開始時の 12MP フル解像度サーフェス縮小処理の最適化** `[優先度: 中]` `[難易度: 易]`
+  - **対象**: `src/playback_manager.c` (`playback_manager_start_quick_review`, `create_safe_texture_from_surface`)
+  - **内容**: 4608x2592 (約 35.8MB) の RAW バッファからクイックレビュー用テクスチャを作成する際、メインスレッドでフル解像度のフォーマット変換と 4096px への縮小が走るためシャッター直後のフレームドロップ要因となる。クイックレビュー時は表示ウィンドウ解像度を上限サイズとして渡す、およびフォーマット一致時の不要な変換コピーを省略する。
+- [ ] **ワンショット AF (`F` キー) の非ブロッキング化** `[優先度: 中]` `[難易度: 並]`
+  - **対象**: `src/camera_stream.cpp` (`camera_stream_trigger_af`)、`src/main.c`
+  - **内容**: 最大 2.5 秒間メインスレッドを `sleep_for(20ms)` でブロックしているポーリングループを廃止し、AF トリガー要求のみを非同期発行してメインループを止めずにプレビュー更新・OSD 状態表示を行えるようにする。
+- [ ] **再生モード中の不要なプレビューフレーム `memcpy` の停止** `[優先度: 低]` `[難易度: 易]`
+  - **対象**: `src/main.c`
+  - **内容**: `APP_MODE_LIVE` 以外のモードでも毎フレーム呼んでいる `camera_stream_get_latest_frame()` による数 MB の不要なメモリコピーを省略する。
 
 ---
 
