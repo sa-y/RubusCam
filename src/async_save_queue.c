@@ -1,5 +1,6 @@
 #include "async_save_queue.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +8,120 @@
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+
+typedef struct MemRwBuffer {
+  uint8_t *data;
+  size_t size;
+  size_t pos;
+  size_t capacity;
+  bool error;
+} MemRwBuffer;
+
+static Sint64 SDLCALL mem_rw_size(SDL_RWops *context) {
+  const MemRwBuffer *buf =
+      (const MemRwBuffer *)context->hidden.unknown.data1;
+  return buf ? (Sint64)buf->size : -1;
+}
+
+static Sint64 SDLCALL mem_rw_seek(SDL_RWops *context, Sint64 offset,
+                                  int whence) {
+  MemRwBuffer *buf = (MemRwBuffer *)context->hidden.unknown.data1;
+  if (!buf) {
+    return -1;
+  }
+
+  Sint64 new_pos = 0;
+  switch (whence) {
+  case RW_SEEK_SET:
+    new_pos = offset;
+    break;
+  case RW_SEEK_CUR:
+    new_pos = (Sint64)buf->pos + offset;
+    break;
+  case RW_SEEK_END:
+    new_pos = (Sint64)buf->size + offset;
+    break;
+  default:
+    return -1;
+  }
+
+  if (new_pos < 0) {
+    return -1;
+  }
+  buf->pos = (size_t)new_pos;
+  return (Sint64)buf->pos;
+}
+
+static size_t SDLCALL mem_rw_read(SDL_RWops *context, void *ptr, size_t size,
+                                  size_t maxnum) {
+  MemRwBuffer *buf = (MemRwBuffer *)context->hidden.unknown.data1;
+  if (!buf || !ptr || size == 0 || maxnum == 0 || buf->pos >= buf->size) {
+    return 0;
+  }
+
+  size_t avail = (buf->size - buf->pos) / size;
+  size_t count = maxnum < avail ? maxnum : avail;
+  if (count > 0) {
+    size_t bytes = count * size;
+    memcpy(ptr, buf->data + buf->pos, bytes);
+    buf->pos += bytes;
+  }
+  return count;
+}
+
+static size_t SDLCALL mem_rw_write(SDL_RWops *context, const void *ptr,
+                                   size_t size, size_t num) {
+  MemRwBuffer *buf = (MemRwBuffer *)context->hidden.unknown.data1;
+  if (!buf || !ptr || size == 0 || num == 0 || buf->error) {
+    return 0;
+  }
+
+  if (num > (SIZE_MAX / size)) {
+    buf->error = true;
+    return 0;
+  }
+  size_t total = size * num;
+  if (total > (SIZE_MAX - buf->pos)) {
+    buf->error = true;
+    return 0;
+  }
+  size_t end_pos = buf->pos + total;
+
+  if (end_pos > buf->capacity) {
+    size_t new_cap = buf->capacity > 0 ? buf->capacity : (256U * 1024U);
+    while (new_cap < end_pos) {
+      if (new_cap > (SIZE_MAX / 2U)) {
+        new_cap = end_pos;
+        break;
+      }
+      new_cap *= 2U;
+    }
+    uint8_t *new_data = (uint8_t *)realloc(buf->data, new_cap);
+    if (!new_data) {
+      buf->error = true;
+      return 0;
+    }
+    if (buf->pos > buf->size) {
+      memset(new_data + buf->size, 0, buf->pos - buf->size);
+    }
+    buf->data = new_data;
+    buf->capacity = new_cap;
+  }
+
+  memcpy(buf->data + buf->pos, ptr, total);
+  buf->pos += total;
+  if (buf->pos > buf->size) {
+    buf->size = buf->pos;
+  }
+  return num;
+}
+
+static int SDLCALL mem_rw_close(SDL_RWops *context) {
+  if (context) {
+    SDL_FreeRW(context);
+  }
+  return 0;
+}
 
 static bool encode_and_save_job(const AsyncSaveJob *job) {
   if (!job || !job->raw_data || job->width <= 0 || job->height <= 0 ||
@@ -33,64 +148,45 @@ static bool encode_and_save_job(const AsyncSaveJob *job) {
     quality = 100;
   }
 
-  /* Encode to a temporary staging file first so incomplete JPEGs are never
-   * visible under the target .JPG name */
-  char enc_tmp_path[540];
-  int written =
-      snprintf(enc_tmp_path, sizeof(enc_tmp_path), "%s.enc.tmp", job->filepath);
-  if (written < 0 || (size_t)written >= sizeof(enc_tmp_path)) {
+  /* Encode directly into an expandable in-memory buffer via SDL_RWops so we
+   * only write to the SD card once when injecting the Exif APP1 header */
+  MemRwBuffer mem_buf;
+  memset(&mem_buf, 0, sizeof(mem_buf));
+  mem_buf.capacity = 512U * 1024U;
+  mem_buf.data = (uint8_t *)malloc(mem_buf.capacity);
+  if (!mem_buf.data) {
     SDL_FreeSurface(surface);
     return false;
   }
 
-  int ret = IMG_SaveJPG(surface, enc_tmp_path, quality);
+  SDL_RWops *rw = SDL_AllocRW();
+  if (!rw) {
+    free(mem_buf.data);
+    SDL_FreeSurface(surface);
+    return false;
+  }
+  rw->size = mem_rw_size;
+  rw->seek = mem_rw_seek;
+  rw->read = mem_rw_read;
+  rw->write = mem_rw_write;
+  rw->close = mem_rw_close;
+  rw->type = SDL_RWOPS_UNKNOWN;
+  rw->hidden.unknown.data1 = &mem_buf;
+
+  int ret = IMG_SaveJPG_RW(surface, rw, 0, quality);
+  SDL_FreeRW(rw);
   SDL_FreeSurface(surface);
 
-  if (ret != 0) {
-    fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
+  if (ret != 0 || mem_buf.error || mem_buf.size < 4) {
+    fprintf(stderr, "[エラー] IMG_SaveJPG_RW による保存に失敗しました: %s\n",
             IMG_GetError());
-    unlink(enc_tmp_path);
+    free(mem_buf.data);
     return false;
   }
 
-  /* Read encoded JPEG stream and atomically write final file with Exif APP1 */
-  FILE *fp = fopen(enc_tmp_path, "rb");
-  if (!fp) {
-    unlink(enc_tmp_path);
-    return false;
-  }
-
-  if (fseek(fp, 0, SEEK_END) != 0) {
-    fclose(fp);
-    unlink(enc_tmp_path);
-    return false;
-  }
-  long file_len = ftell(fp);
-  if (file_len < 4 || fseek(fp, 0, SEEK_SET) != 0) {
-    fclose(fp);
-    unlink(enc_tmp_path);
-    return false;
-  }
-
-  uint8_t *jpeg_buf = (uint8_t *)malloc((size_t)file_len);
-  if (!jpeg_buf) {
-    fclose(fp);
-    unlink(enc_tmp_path);
-    return false;
-  }
-
-  size_t nread = fread(jpeg_buf, 1, (size_t)file_len, fp);
-  fclose(fp);
-  unlink(enc_tmp_path);
-
-  if (nread != (size_t)file_len) {
-    free(jpeg_buf);
-    return false;
-  }
-
-  bool ok =
-      exif_write_jpeg_with_app1(job->filepath, jpeg_buf, nread, &job->exif);
-  free(jpeg_buf);
+  bool ok = exif_write_jpeg_with_app1(job->filepath, mem_buf.data, mem_buf.size,
+                                      &job->exif);
+  free(mem_buf.data);
   return ok;
 }
 
