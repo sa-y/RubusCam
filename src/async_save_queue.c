@@ -121,9 +121,7 @@ static void *save_worker_thread_main(void *arg) {
       if (job.raw_data) {
         free(job.raw_data);
       }
-      if (q->count == 0 && !q->worker_busy) {
-        pthread_cond_broadcast(&q->cond_idle);
-      }
+      pthread_cond_broadcast(&q->cond_idle);
       pthread_mutex_unlock(&q->mutex);
       continue;
     }
@@ -166,9 +164,7 @@ static void *save_worker_thread_main(void *arg) {
               job.filepath);
     }
 
-    if (q->count == 0 && !q->worker_busy) {
-      pthread_cond_broadcast(&q->cond_idle);
-    }
+    pthread_cond_broadcast(&q->cond_idle);
     pthread_mutex_unlock(&q->mutex);
   }
 

@@ -1647,7 +1647,7 @@ void playback_manager_render_toast(PlaybackManager *pm, SDL_Renderer *renderer,
   }
 
   uint32_t now = SDL_GetTicks();
-  if (now >= pm->toast_expire_ms) {
+  if (SDL_TICKS_PASSED(now, pm->toast_expire_ms)) {
     pm->toast_message[0] = '\0';
     return;
   }

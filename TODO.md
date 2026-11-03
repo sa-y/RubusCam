@@ -51,13 +51,13 @@
 - [x] **日本語 UI テキストの文字化け対策（CJK フォント対応または英語統一）** `[優先度: 高]` `[難易度: 易]`
   - **対象**: `src/text_renderer.c` (`DEFAULT_FONT_PATHS`)、`src/playback_manager.c` (`render_delete_dialog`, `playback_manager_render`, `set_toast`)
   - **内容**: `DEFAULT_FONT_PATHS` に欧文フォントのみが指定されているため、削除確認ダイアログ・クイックレビュー下部ガイド・トースト通知に含まれる日本語が豆腐（□）になる問題を解消する。日本語対応フォント（`NotoSansCJK`, `fonts-japanese-gothic.ttf` 等）を探索リストの先頭に追加するか、UI 表示文字列を英語に統一する。
-- [ ] **非同期保存キャンセル待機時のデッドロック／遅延リスクの修正** `[優先度: 高]` `[難易度: 易]`
+- [x] **非同期保存キャンセル待機時のデッドロック／遅延リスクの修正** `[優先度: 高]` `[難易度: 易]`
   - **対象**: `src/async_save_queue.c` (`async_save_queue_cancel_or_delete`, `save_worker_thread_main`)
   - **内容**: ワーカースレッドがエンコード中の画像をクイックレビューから即時破棄する際、`q->count > 0`（後続ジョブあり）だと `cond_idle` が broadcast されず、後続ジョブがすべて完了するまでメインスレッドが待機してしまう問題を修正する（1ジョブ完了ごとに `pthread_cond_broadcast(&q->cond_idle)` を呼ぶ）。
-- [ ] **シャッター速度を Auto / 高速に戻した際の `FrameDurationLimits` 下限値の適正化** `[優先度: 中]` `[難易度: 易]`
+- [x] **シャッター速度を Auto / 高速に戻した際の `FrameDurationLimits` 下限値の適正化** `[優先度: 中]` `[難易度: 易]`
   - **対象**: `src/camera_stream.cpp` (`applyStartExposureControls`, `applyPendingExposureControls`)
   - **内容**: `shutterUs <= 33333` または Auto 復帰時に `FrameDurationLimits` を `{100, 33333}`（最大 10,000fps 許容）としているため、センサーが高フレームレートで不要なフレームを送出し CPU コピー負荷・発熱が増大する。プレビューのターゲット FPS に合わせて `{33333, 33333}` 等に適正化する。
-- [ ] **`SDL_GetTicks()` の 32bit ラップアラウンド比較の修正** `[優先度: 低]` `[難易度: 易]`
+- [x] **`SDL_GetTicks()` の 32bit ラップアラウンド比較の修正** `[優先度: 低]` `[難易度: 易]`
   - **対象**: `src/playback_manager.c` (`playback_manager_render_toast`)
   - **内容**: `now >= pm->toast_expire_ms` の単純大小比較を `SDL_TICKS_PASSED(now, pm->toast_expire_ms)`（または経過時間差分比較）に統一する。
 - [x] **既存 Exif 付き JPEG への再注入時の APP1 セグメント重複防止** `[優先度: 低]` `[難易度: 易]`

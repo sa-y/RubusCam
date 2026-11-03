@@ -364,11 +364,9 @@ void CameraStream::applyStartExposureControls(
   // Only set manual ExposureTime if shutter speed is manually specified
   if (shutterUs > 0) {
     ctrls.set(libcamera::controls::ExposureTime, shutterUs);
-    int64_t minFrameDur =
-        shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 100;
-    int64_t maxFrameDur =
+    int64_t frameDur =
         shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 33333;
-    std::int64_t frameDurationLimits[2] = {minFrameDur, maxFrameDur};
+    std::int64_t frameDurationLimits[2] = {frameDur, frameDur};
     ctrls.set(libcamera::controls::FrameDurationLimits, frameDurationLimits);
   }
 
@@ -412,15 +410,13 @@ void CameraStream::applyPendingExposureControls(libcamera::ControlList &ctrls) {
     const int32_t shutterUs = m_shutterUsSetting.load();
     if (shutterUs > 0) {
       ctrls.set(libcamera::controls::ExposureTime, shutterUs);
-      int64_t minFrameDur =
-          shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 100;
-      int64_t maxFrameDur =
+      int64_t frameDur =
           shutterUs > 33333 ? static_cast<int64_t>(shutterUs) : 33333;
-      std::int64_t frameDurationLimits[2] = {minFrameDur, maxFrameDur};
+      std::int64_t frameDurationLimits[2] = {frameDur, frameDur};
       ctrls.set(libcamera::controls::FrameDurationLimits, frameDurationLimits);
     } else {
       ctrls.set(libcamera::controls::ExposureTime, 0);
-      std::int64_t defaultFrameLimits[2] = {100, 33333};
+      std::int64_t defaultFrameLimits[2] = {33333, 33333};
       ctrls.set(libcamera::controls::FrameDurationLimits, defaultFrameLimits);
     }
   }
