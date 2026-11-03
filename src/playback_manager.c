@@ -735,14 +735,14 @@ static void toggle_current_protection(PlaybackManager *pm) {
   if (dcf_storage_set_protected(entry->filepath, new_state)) {
     entry->is_protected = new_state;
     if (new_state) {
-      set_toast(pm, "[PROTECTED] 画像を保護しました (誤削除防止 ON)", 2200);
+      set_toast(pm, "[PROTECTED] Photo protected (Delete lock ON)", 2200);
       printf("[-] プロテクト ON: %s\n", entry->filepath);
     } else {
-      set_toast(pm, "[UNPROTECTED] 画像の保護を解除しました", 2200);
+      set_toast(pm, "[UNPROTECTED] Photo protection removed", 2200);
       printf("[-] プロテクト OFF: %s\n", entry->filepath);
     }
   } else {
-    set_toast(pm, "[エラー] プロテクト状態の変更に失敗しました", 2500);
+    set_toast(pm, "[ERROR] Failed to change protection state", 2500);
   }
 }
 
@@ -755,7 +755,7 @@ static void execute_delete_single(PlaybackManager *pm, SDL_Renderer *renderer) {
   DcfMediaEntry *entry = &pm->media_list.entries[pm->current_index];
   if (entry->is_protected || dcf_storage_is_protected(entry->filepath)) {
     entry->is_protected = true;
-    set_toast(pm, "[警告] 保護された画像は削除できません ([L]キーで解除可能)",
+    set_toast(pm, "[WARN] Protected photo cannot be deleted ([L] to unlock)",
               2800);
     return;
   }
@@ -764,7 +764,7 @@ static void execute_delete_single(PlaybackManager *pm, SDL_Renderer *renderer) {
   snprintf(deleted_name, sizeof(deleted_name), "%s", entry->filename);
 
   if (!dcf_storage_delete_file(pm->dcf, entry->filepath)) {
-    set_toast(pm, "[エラー] ファイルの削除に失敗しました", 2500);
+    set_toast(pm, "[ERROR] Failed to delete file", 2500);
     return;
   }
 
@@ -787,7 +787,7 @@ static void execute_delete_single(PlaybackManager *pm, SDL_Renderer *renderer) {
   }
 
   char msg[320];
-  snprintf(msg, sizeof(msg), "削除しました: %s", deleted_name);
+  snprintf(msg, sizeof(msg), "Deleted: %s", deleted_name);
   set_toast(pm, msg, 2200);
 }
 
@@ -799,7 +799,7 @@ static void execute_delete_all_unprotected(PlaybackManager *pm,
 
   int deleted = dcf_storage_delete_all_unprotected(pm->dcf);
   if (deleted < 0) {
-    set_toast(pm, "[エラー] 全削除処理に失敗しました", 2500);
+    set_toast(pm, "[ERROR] Failed to delete all photos", 2500);
     return;
   }
 
@@ -819,10 +819,9 @@ static void execute_delete_all_unprotected(PlaybackManager *pm,
 
   char msg[128];
   if (deleted == 0) {
-    snprintf(msg, sizeof(msg),
-             "削除対象がありません (全画像が保護されています)");
+    snprintf(msg, sizeof(msg), "No photos to delete (All photos are protected)");
   } else {
-    snprintf(msg, sizeof(msg), "未保護の画像を %d 枚削除しました (残り %zu 枚)",
+    snprintf(msg, sizeof(msg), "Deleted %d unprotected photo(s) (%zu remaining)",
              deleted, pm->media_list.count);
   }
   set_toast(pm, msg, 2800);
@@ -847,12 +846,12 @@ bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
     case SDLK_BACKSPACE:
     case SDLK_d:
       if (pm->quick_review_protected) {
-        set_toast(pm, "[警告] 保護された画像は削除できません", 2200);
+        set_toast(pm, "[WARN] Protected photo cannot be deleted", 2200);
       } else if (async_save_queue_cancel_or_delete(pm->save_queue, pm->dcf,
                                                    pm->quick_review_filepath)) {
         printf("[-] クイックレビュー: 直前の撮影画像を破棄しました (%s)\n",
                pm->quick_review_filepath);
-        set_toast(pm, "直前の撮影画像を削除しました", 2200);
+        set_toast(pm, "Discarded last captured photo", 2200);
         playback_manager_return_to_live(pm);
       }
       return true;
@@ -865,8 +864,8 @@ bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
         /* Extend review timer slightly so user sees confirmation */
         pm->quick_review_start_ms = SDL_GetTicks();
         set_toast(pm,
-                  next_prot ? "[PROTECTED] 直前の撮影画像を保護しました"
-                            : "画像の保護を解除しました",
+                  next_prot ? "[PROTECTED] Last captured photo protected"
+                            : "Photo protection removed",
                   2000);
       }
       return true;
@@ -1533,9 +1532,9 @@ static void render_delete_dialog(const PlaybackManager *pm,
                           NULL, NULL);
 
   const char *options[3] = {
-      "[1] Delete Current Photo (1枚削除)",
-      "[2] Delete All Unprotected Photos (未保護の全写真を削除)",
-      "[3] Cancel (キャンセル)"};
+      "[1] Delete Current Photo",
+      "[2] Delete All Unprotected Photos",
+      "[3] Cancel"};
 
   for (int i = 0; i < 3; ++i) {
     SDL_Rect row = {dlg.x + 20, dlg.y + 62 + i * 42, dlg.w - 40, 34};
@@ -1601,8 +1600,8 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     }
 
     const char *bottom_guide =
-        "[Del / BS]: 即削除 (Discard)   |   [L]: 保護 (Protect)   |   "
-        "[P]: 再生モードへ   |   [Space]: 撮影へ戻る";
+        "[Del / BS]: Discard   |   [L]: Protect   |   "
+        "[P]: Playback   |   [Space]: Live View";
     SDL_Color white = {255, 255, 255, 255};
     SDL_Color bot_border = {255, 255, 255, 80};
     text_renderer_draw_badge(renderer, bottom_guide, 12, win_h - 44, white, bg,
@@ -1617,8 +1616,8 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     SDL_Color white = {255, 255, 255, 255};
     SDL_Color bg = {30, 32, 40, 220};
     SDL_Color bd = {120, 130, 150, 180};
-    const char *empty_msg = "保存された写真がありません (No Images in DCIM)  — "
-                            " [P / Space]: 撮影モードへ戻る";
+    const char *empty_msg =
+        "No Images in DCIM  -  [P / Space]: Return to Live View";
     int tw = 0, th = 0;
     text_renderer_measure_text(empty_msg, &tw, &th);
     text_renderer_draw_badge(renderer, empty_msg, (win_w - tw - 24) / 2,
