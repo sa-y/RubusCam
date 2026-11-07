@@ -183,10 +183,33 @@ void camera_stream_get_exposure_status(const CameraStream *cam,
                                        CameraExposureStatus *out_status);
 
 /*
- * Trigger one-shot autofocus cycle (equivalent to 'F' key in pycamera).
- * Returns true if focused successfully, false otherwise.
+ * Autofocus state reported by the sensor / ISP.
+ */
+typedef enum CameraAfStatus {
+  CAMERA_AF_STATUS_IDLE = 0,
+  CAMERA_AF_STATUS_SCANNING = 1,
+  CAMERA_AF_STATUS_FOCUSED = 2,
+  CAMERA_AF_STATUS_FAILED = 3
+} CameraAfStatus;
+
+/*
+ * Trigger non-blocking one-shot autofocus cycle (equivalent to 'F' key).
+ * Returns true if the AF request was queued, false if AF is unsupported.
  */
 bool camera_stream_trigger_af(CameraStream *cam);
+
+/*
+ * Trigger non-blocking touch autofocus at normalized viewport coordinates
+ * (norm_x, norm_y) in [0.0f .. 1.0f]. Pass negative coordinates (-1.0f, -1.0f)
+ * to reset the AF window to default full/center metering.
+ */
+bool camera_stream_trigger_touch_af(CameraStream *cam, float norm_x,
+                                    float norm_y);
+
+/*
+ * Query current autofocus state (Idle, Scanning, Focused, or Failed).
+ */
+CameraAfStatus camera_stream_get_af_status(const CameraStream *cam);
 
 /*
  * Callback function type for encoding and saving a captured still image buffer.

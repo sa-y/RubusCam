@@ -128,6 +128,57 @@ typedef struct {
   /* Ring buffer of recent capture exposure metadata */
   CaptureMetaRecord meta_cache[PLAYBACK_META_CACHE_SIZE];
   size_t meta_cache_next;
+
+  /* Touch & Mouse pointer state */
+  int pointer_x;
+  int pointer_y;
+  bool pointer_down;
+  int down_start_x;
+  int down_start_y;
+  int last_drag_x;
+  int last_drag_y;
+  bool is_dragging;
+  bool dragging_pip_map;
+  uint32_t last_tap_ms;
+  int last_tap_x;
+  int last_tap_y;
+
+  /* Quick Review interactive button hitboxes */
+  SDL_Rect qr_btn_delete;
+  SDL_Rect qr_btn_protect;
+  SDL_Rect qr_btn_playback;
+  SDL_Rect qr_btn_live;
+
+  /* Playback Single View interactive button hitboxes */
+  SDL_Rect pb_btn_live;
+  SDL_Rect pb_btn_grid;
+  SDL_Rect pb_btn_zoom_in;
+  SDL_Rect pb_btn_zoom_out;
+  SDL_Rect pb_btn_zoom_reset;
+  SDL_Rect pb_btn_info;
+  SDL_Rect pb_btn_lock;
+  SDL_Rect pb_btn_delete;
+  SDL_Rect pb_btn_prev;
+  SDL_Rect pb_btn_next;
+  SDL_Rect pb_pip_rect;
+  SDL_Rect pb_viewport_rect;
+
+  /* Playback Grid View interactive hitboxes */
+  SDL_Rect grid_btn_live;
+  SDL_Rect grid_btn_mode;
+  SDL_Rect grid_btn_prev_page;
+  SDL_Rect grid_btn_next_page;
+  SDL_Rect grid_btn_lock;
+  SDL_Rect grid_btn_delete;
+  SDL_Rect grid_cell_rects[PLAYBACK_MAX_GRID_CELLS];
+  int grid_cell_media_indices[PLAYBACK_MAX_GRID_CELLS];
+
+  /* Delete Confirmation Dialog hitboxes */
+  SDL_Rect dlg_rect;
+  SDL_Rect dlg_option_rects[3];
+
+  /* Empty gallery return button hitbox */
+  SDL_Rect empty_btn_live;
 } PlaybackManager;
 
 /*
@@ -185,6 +236,20 @@ void playback_manager_return_to_live(PlaybackManager *pm);
  */
 bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
                                  const SDL_KeyboardEvent *key_event);
+
+/*
+ * Process mouse/touch pointer press, move, release, and mouse wheel events
+ * when in APP_MODE_QUICK_REVIEW or APP_MODE_PLAYBACK.
+ * Coordinates (x, y) are in window pixel coordinates.
+ */
+bool playback_manager_handle_pointer_down(PlaybackManager *pm,
+                                          SDL_Renderer *renderer, int x, int y);
+bool playback_manager_handle_pointer_move(PlaybackManager *pm,
+                                          SDL_Renderer *renderer, int x, int y);
+bool playback_manager_handle_pointer_up(PlaybackManager *pm,
+                                        SDL_Renderer *renderer, int x, int y);
+bool playback_manager_handle_wheel(PlaybackManager *pm, SDL_Renderer *renderer,
+                                   int wheel_y, int pointer_x, int pointer_y);
 
 /*
  * Per-frame update (handles Quick Review timer expiration and continuous arrow

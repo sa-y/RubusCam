@@ -23,6 +23,33 @@ static int g_hud_w = 0;
 static int g_hud_h = 0;
 static char g_last_hud_text[384] = {0};
 
+// LRU cache for general text & UI button textures to avoid per-frame
+// TTF_RenderUTF8_Blended + SDL_CreateTextureFromSurface overhead
+#define TEXT_CACHE_CAPACITY 96
+
+typedef struct TextCacheEntry {
+  bool in_use;
+  char text[192];
+  SDL_Color color;
+  SDL_Texture *texture;
+  int w;
+  int h;
+  uint32_t last_used_tick;
+} TextCacheEntry;
+
+static TextCacheEntry g_text_cache[TEXT_CACHE_CAPACITY];
+static uint32_t g_text_cache_clock = 0;
+
+static void clear_text_cache(void) {
+  for (int i = 0; i < TEXT_CACHE_CAPACITY; ++i) {
+    if (g_text_cache[i].texture) {
+      SDL_DestroyTexture(g_text_cache[i].texture);
+      g_text_cache[i].texture = NULL;
+    }
+    g_text_cache[i].in_use = false;
+  }
+}
+
 static const char *DEFAULT_FONT_PATHS[] = {
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -98,6 +125,8 @@ void text_renderer_destroy(void) {
     g_hud_h = 0;
     g_last_hud_text[0] = '\0';
   }
+
+  clear_text_cache();
 
   if (g_font) {
     TTF_CloseFont(g_font);
@@ -367,6 +396,84 @@ void text_renderer_draw_text(SDL_Renderer *renderer, const char *text, int x,
     return;
   }
 
+  size_t text_len = strlen(text);
+  if (text_len < sizeof(g_text_cache[0].text)) {
+    g_text_cache_clock++;
+
+    /* 1. Lookup in LRU texture cache */
+    for (int i = 0; i < TEXT_CACHE_CAPACITY; ++i) {
+      TextCacheEntry *e = &g_text_cache[i];
+      if (e->in_use && e->texture && e->color.r == color.r &&
+          e->color.g == color.g && e->color.b == color.b &&
+          e->color.a == color.a && strcmp(e->text, text) == 0) {
+        e->last_used_tick = g_text_cache_clock;
+        SDL_Rect dst = {x, y, e->w, e->h};
+        SDL_RenderCopy(renderer, e->texture, NULL, &dst);
+        if (out_w) {
+          *out_w = e->w;
+        }
+        if (out_h) {
+          *out_h = e->h;
+        }
+        return;
+      }
+    }
+
+    /* 2. Rasterize and insert into free or LRU slot */
+    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, text, color);
+    if (!surf) {
+      return;
+    }
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, surf);
+    int w = surf->w;
+    int h = surf->h;
+    SDL_FreeSurface(surf);
+    if (!tex) {
+      return;
+    }
+
+    int target_slot = -1;
+    uint32_t oldest_tick = UINT32_MAX;
+    for (int i = 0; i < TEXT_CACHE_CAPACITY; ++i) {
+      if (!g_text_cache[i].in_use) {
+        target_slot = i;
+        break;
+      }
+      if (g_text_cache[i].last_used_tick <= oldest_tick) {
+        oldest_tick = g_text_cache[i].last_used_tick;
+        target_slot = i;
+      }
+    }
+
+    if (target_slot >= 0) {
+      TextCacheEntry *e = &g_text_cache[target_slot];
+      if (e->texture) {
+        SDL_DestroyTexture(e->texture);
+      }
+      e->in_use = true;
+      snprintf(e->text, sizeof(e->text), "%s", text);
+      e->color = color;
+      e->texture = tex;
+      e->w = w;
+      e->h = h;
+      e->last_used_tick = g_text_cache_clock;
+    }
+
+    SDL_Rect dst = {x, y, w, h};
+    SDL_RenderCopy(renderer, tex, NULL, &dst);
+    if (target_slot < 0) {
+      SDL_DestroyTexture(tex);
+    }
+    if (out_w) {
+      *out_w = w;
+    }
+    if (out_h) {
+      *out_h = h;
+    }
+    return;
+  }
+
+  /* Fallback for strings longer than cache entry buffer */
   SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, text, color);
   if (!surf) {
     return;
@@ -425,6 +532,101 @@ void text_renderer_draw_badge(SDL_Renderer *renderer, const char *text, int x,
   text_renderer_draw_panel(renderer, &box, bg_color, border_color);
   text_renderer_draw_text(renderer, text, x + pad_x, y + pad_y, text_color,
                           NULL, NULL);
+
+  if (out_box) {
+    *out_box = box;
+  }
+}
+
+void text_renderer_draw_button(SDL_Renderer *renderer, const char *text, int x,
+                               int y, int min_w, int min_h, UiButtonStyle style,
+                               bool hovered, bool pressed, SDL_Rect *out_box) {
+  if (!renderer || !text) {
+    if (out_box) {
+      SDL_Rect empty = {0, 0, 0, 0};
+      *out_box = empty;
+    }
+    return;
+  }
+
+  int tw = 0;
+  int th = 0;
+  if (!text_renderer_measure_text(text, &tw, &th)) {
+    tw = (int)strlen(text) * 9;
+    th = 18;
+  }
+
+  const int pad_x = 12;
+  const int pad_y = 7;
+  int w = tw + pad_x * 2;
+  int h = th + pad_y * 2;
+  if (min_w > w) {
+    w = min_w;
+  }
+  if (min_h > h) {
+    h = min_h;
+  }
+
+  SDL_Color fg = {245, 248, 255, 255};
+  SDL_Color bg = {18, 22, 30, 205};
+  SDL_Color bd = {150, 165, 190, 140};
+
+  switch (style) {
+  case UI_BTN_STYLE_ACTIVE:
+    fg = (SDL_Color){255, 255, 255, 255};
+    bg = (SDL_Color){16, 105, 155, 235};
+    bd = (SDL_Color){90, 220, 255, 255};
+    break;
+  case UI_BTN_STYLE_ACCENT:
+    fg = (SDL_Color){255, 235, 110, 255};
+    bg = (SDL_Color){95, 65, 8, 225};
+    bd = (SDL_Color){255, 205, 55, 240};
+    break;
+  case UI_BTN_STYLE_DANGER:
+    fg = (SDL_Color){255, 245, 245, 255};
+    bg = (SDL_Color){170, 32, 38, 230};
+    bd = (SDL_Color){255, 130, 130, 245};
+    break;
+  case UI_BTN_STYLE_SUCCESS:
+    fg = (SDL_Color){230, 255, 235, 255};
+    bg = (SDL_Color){22, 115, 55, 230};
+    bd = (SDL_Color){110, 240, 145, 240};
+    break;
+  case UI_BTN_STYLE_DEFAULT:
+  default:
+    break;
+  }
+
+  if (pressed) {
+    bg.r = (Uint8)(bg.r + (255 - bg.r) / 3);
+    bg.g = (Uint8)(bg.g + (255 - bg.g) / 3);
+    bg.b = (Uint8)(bg.b + (255 - bg.b) / 3);
+    bg.a = 250;
+    bd = (SDL_Color){255, 255, 255, 255};
+  } else if (hovered) {
+    bg.r = (Uint8)(bg.r + (255 - bg.r) / 6);
+    bg.g = (Uint8)(bg.g + (255 - bg.g) / 6);
+    bg.b = (Uint8)(bg.b + (255 - bg.b) / 6);
+    bg.a = 235;
+    bd.a = 235;
+  }
+
+  SDL_Rect box = {x, y, w, h};
+  text_renderer_draw_panel(renderer, &box, bg, bd);
+
+  /* Draw a second inner border when active or hovered for crisp visibility */
+  if (style == UI_BTN_STYLE_ACTIVE || style == UI_BTN_STYLE_DANGER || hovered ||
+      pressed) {
+    SDL_Rect inner = {x + 1, y + 1, w - 2, h - 2};
+    SDL_Color inner_bd = {bd.r, bd.g, bd.b, (Uint8)(bd.a / 2)};
+    SDL_SetRenderDrawColor(renderer, inner_bd.r, inner_bd.g, inner_bd.b,
+                           inner_bd.a);
+    SDL_RenderDrawRect(renderer, &inner);
+  }
+
+  int tx = x + (w - tw) / 2;
+  int ty = y + (h - th) / 2;
+  text_renderer_draw_text(renderer, text, tx, ty, fg, NULL, NULL);
 
   if (out_box) {
     *out_box = box;

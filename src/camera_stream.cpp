@@ -127,6 +127,10 @@ struct CameraStream {
   std::atomic<int> m_afState{0};
   std::atomic<float> m_lastLensPosition{0.0f};
   std::atomic<bool> m_hasLensPosition{false};
+  std::atomic<bool> m_afUseCustomWindow{false};
+  std::atomic<bool> m_afRestoreContinuousOnDone{false};
+  std::atomic<float> m_afNormX{0.5f};
+  std::atomic<float> m_afNormY{0.5f};
 
   // Exposure, White Balance, and Metering control settings & live sensor
   // metadata
@@ -747,6 +751,11 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
   const libcamera::ControlList &metadata = request->metadata();
   if (const auto afState = metadata.get(libcamera::controls::AfState)) {
     m_afState = *afState;
+    if ((*afState == libcamera::controls::AfStateFocused ||
+         *afState == libcamera::controls::AfStateFailed) &&
+        m_afRestoreContinuousOnDone.exchange(false)) {
+      m_afContinuousPending = true;
+    }
   }
   if (const auto lensPos = metadata.get(libcamera::controls::LensPosition)) {
     m_lastLensPosition = *lensPos;
@@ -851,11 +860,56 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
   // Apply autofocus controls if requested
   if (m_afSupported) {
     if (m_afTriggerPending.exchange(false)) {
+      const auto &camCtrls = m_camera->controls();
+      const bool hasAfMetering =
+          camCtrls.find(&libcamera::controls::AfMetering) != camCtrls.end();
+      const bool hasAfWindows =
+          camCtrls.find(&libcamera::controls::AfWindows) != camCtrls.end();
+
+      if (m_afUseCustomWindow.load() && hasAfMetering && hasAfWindows) {
+        if (const auto maxCropOpt = m_camera->properties().get(
+                libcamera::properties::ScalerCropMaximum)) {
+          libcamera::Rectangle sensorRect = *maxCropOpt;
+          if (sensorRect.width > 0 && sensorRect.height > 0) {
+            float nx = std::clamp(m_afNormX.load(), 0.05f, 0.95f);
+            float ny = std::clamp(m_afNormY.load(), 0.05f, 0.95f);
+            unsigned int winW = std::max(64u, sensorRect.width / 6);
+            unsigned int winH = std::max(64u, sensorRect.height / 6);
+            int winX = sensorRect.x +
+                       static_cast<int>(nx * sensorRect.width) -
+                       static_cast<int>(winW / 2);
+            int winY = sensorRect.y +
+                       static_cast<int>(ny * sensorRect.height) -
+                       static_cast<int>(winH / 2);
+            winX = std::clamp(winX, sensorRect.x,
+                              sensorRect.x +
+                                  static_cast<int>(sensorRect.width - winW));
+            winY = std::clamp(winY, sensorRect.y,
+                              sensorRect.y +
+                                  static_cast<int>(sensorRect.height - winH));
+            libcamera::Rectangle afWin(winX, winY, winW, winH);
+            libcamera::Rectangle windows[1] = {afWin};
+            request->controls().set(libcamera::controls::AfMetering,
+                                    libcamera::controls::AfMeteringWindows);
+            request->controls().set(libcamera::controls::AfWindows, windows);
+          }
+        }
+      } else if (hasAfMetering) {
+        request->controls().set(libcamera::controls::AfMetering,
+                                libcamera::controls::AfMeteringAuto);
+      }
+
       request->controls().set(libcamera::controls::AfMode,
                               libcamera::controls::AfModeAuto);
       request->controls().set(libcamera::controls::AfTrigger,
                               libcamera::controls::AfTriggerStart);
     } else if (m_afContinuousPending.exchange(false)) {
+      const auto &camCtrls = m_camera->controls();
+      if (!m_afUseCustomWindow.load() &&
+          camCtrls.find(&libcamera::controls::AfMetering) != camCtrls.end()) {
+        request->controls().set(libcamera::controls::AfMetering,
+                                libcamera::controls::AfMeteringAuto);
+      }
       request->controls().set(libcamera::controls::AfMode,
                               libcamera::controls::AfModeContinuous);
     }
@@ -1344,45 +1398,50 @@ void camera_stream_get_exposure_status(const CameraStream *cam,
   cam->populateExposureStatus(out_status);
 }
 
-bool camera_stream_trigger_af(CameraStream *cam) {
+bool camera_stream_trigger_touch_af(CameraStream *cam, float norm_x,
+                                    float norm_y) {
   if (!cam || !cam->m_afSupported || !cam->m_running) {
     return false;
   }
 
-  std::cout << "[-] オートフォーカスを調整中..." << std::endl;
-
-  // Reset state & flag trigger
-  cam->m_afState = 0;
-  cam->m_afTriggerPending = true;
-
-  // Wait up to 2.5 seconds for AF cycle to finish (AfStateFocused or
-  // AfStateFailed)
-  auto startTime = std::chrono::steady_clock::now();
-  bool focused = false;
-
-  while (std::chrono::steady_clock::now() - startTime < 2500ms) {
-    int state = cam->m_afState.load();
-    if (state == libcamera::controls::AfStateFocused) {
-      focused = true;
-      break;
-    } else if (state == libcamera::controls::AfStateFailed) {
-      break;
-    }
-    std::this_thread::sleep_for(20ms);
-  }
-
-  if (focused) {
-    std::cout << "[★成功] フォーカスが合いました。" << std::endl;
+  if (norm_x >= 0.0f && norm_x <= 1.0f && norm_y >= 0.0f && norm_y <= 1.0f) {
+    cam->m_afNormX = norm_x;
+    cam->m_afNormY = norm_y;
+    cam->m_afUseCustomWindow = true;
+    cam->m_afRestoreContinuousOnDone = false;
+    std::cout << "[-] タッチAFを実行中 (座標: " << norm_x << ", " << norm_y
+              << ")..." << std::endl;
   } else {
-    std::cout << "[警告] フォーカス調整が完了しませんでした。" << std::endl;
+    cam->m_afUseCustomWindow = false;
+    cam->m_afRestoreContinuousOnDone = true;
+    std::cout << "[-] オートフォーカスを再調整中..." << std::endl;
   }
 
-  // Restore Continuous AF mode on subsequent requests
-  if (cam->m_afSupported) {
-    cam->m_afContinuousPending = true;
-  }
+  cam->m_afState = libcamera::controls::AfStateScanning;
+  cam->m_afTriggerPending = true;
+  return true;
+}
 
-  return focused;
+bool camera_stream_trigger_af(CameraStream *cam) {
+  return camera_stream_trigger_touch_af(cam, -1.0f, -1.0f);
+}
+
+CameraAfStatus camera_stream_get_af_status(const CameraStream *cam) {
+  if (!cam || !cam->m_afSupported) {
+    return CAMERA_AF_STATUS_IDLE;
+  }
+  int state = cam->m_afState.load();
+  switch (state) {
+  case libcamera::controls::AfStateScanning:
+    return CAMERA_AF_STATUS_SCANNING;
+  case libcamera::controls::AfStateFocused:
+    return CAMERA_AF_STATUS_FOCUSED;
+  case libcamera::controls::AfStateFailed:
+    return CAMERA_AF_STATUS_FAILED;
+  case libcamera::controls::AfStateIdle:
+  default:
+    return CAMERA_AF_STATUS_IDLE;
+  }
 }
 
 bool camera_stream_capture_still(CameraStream *cam, const char *filename,

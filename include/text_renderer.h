@@ -70,6 +70,34 @@ void text_renderer_draw_badge(SDL_Renderer *renderer, const char *text, int x,
                               int y, SDL_Color text_color, SDL_Color bg_color,
                               SDL_Color border_color, SDL_Rect *out_box);
 
+/*
+ * Visual style presets for interactive touch/mouse UI buttons.
+ */
+typedef enum UiButtonStyle {
+  UI_BTN_STYLE_DEFAULT = 0, /* Semi-transparent dark button */
+  UI_BTN_STYLE_ACTIVE = 1,  /* Cyan/blue active or selected state */
+  UI_BTN_STYLE_ACCENT = 2,  /* Gold/amber accent (e.g. Lock / AF) */
+  UI_BTN_STYLE_DANGER = 3,  /* Red button (e.g. Shutter / Delete) */
+  UI_BTN_STYLE_SUCCESS = 4  /* Green confirmation/success button */
+} UiButtonStyle;
+
+/*
+ * Draw an interactive touch/mouse button at (x, y) with minimum dimensions
+ * (min_w, min_h), centered label text, and visual feedback for hover/pressed.
+ * Outputs the hit-test bounding box in out_box if non-NULL.
+ */
+void text_renderer_draw_button(SDL_Renderer *renderer, const char *text, int x,
+                               int y, int min_w, int min_h, UiButtonStyle style,
+                               bool hovered, bool pressed, SDL_Rect *out_box);
+
+/*
+ * Hit-test helper: returns true if point (px, py) is inside rect.
+ */
+static inline bool ui_rect_contains(const SDL_Rect *rect, int px, int py) {
+  return rect && rect->w > 0 && rect->h > 0 && px >= rect->x &&
+         px < (rect->x + rect->w) && py >= rect->y && py < (rect->y + rect->h);
+}
+
 #ifdef __cplusplus
 }
 #endif

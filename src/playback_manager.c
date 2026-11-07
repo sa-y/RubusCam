@@ -1150,6 +1150,492 @@ bool playback_manager_handle_key(PlaybackManager *pm, SDL_Renderer *renderer,
   }
 }
 
+static void update_pip_pan_from_point(PlaybackManager *pm, int x, int y) {
+  if (!pm || pm->pb_pip_rect.w <= 0 || pm->pb_pip_rect.h <= 0) {
+    return;
+  }
+  float nx = (float)(x - pm->pb_pip_rect.x) / (float)pm->pb_pip_rect.w;
+  float ny = (float)(y - pm->pb_pip_rect.y) / (float)pm->pb_pip_rect.h;
+  pm->pan_center_x = nx;
+  pm->pan_center_y = ny;
+  clamp_pan_center(pm);
+}
+
+static bool is_btn_hovered(const PlaybackManager *pm, const SDL_Rect *r) {
+  return pm && ui_rect_contains(r, pm->pointer_x, pm->pointer_y);
+}
+
+static bool is_btn_pressed(const PlaybackManager *pm, const SDL_Rect *r) {
+  return pm && pm->pointer_down &&
+         ui_rect_contains(r, pm->down_start_x, pm->down_start_y) &&
+         ui_rect_contains(r, pm->pointer_x, pm->pointer_y);
+}
+
+bool playback_manager_handle_pointer_down(PlaybackManager *pm,
+                                          SDL_Renderer *renderer, int x,
+                                          int y) {
+  (void)renderer;
+  if (!pm || pm->mode == APP_MODE_LIVE) {
+    return false;
+  }
+
+  pm->pointer_x = x;
+  pm->pointer_y = y;
+  pm->pointer_down = true;
+  pm->down_start_x = x;
+  pm->down_start_y = y;
+  pm->last_drag_x = x;
+  pm->last_drag_y = y;
+  pm->is_dragging = false;
+  pm->dragging_pip_map = false;
+
+  if (pm->mode == APP_MODE_PLAYBACK && !pm->delete_dialog_open &&
+      pm->view_mode == PLAY_VIEW_SINGLE && pm->zoom_step_index > 0 &&
+      ui_rect_contains(&pm->pb_pip_rect, x, y)) {
+    pm->dragging_pip_map = true;
+    pm->is_dragging = true;
+    update_pip_pan_from_point(pm, x, y);
+  }
+
+  return true;
+}
+
+bool playback_manager_handle_pointer_move(PlaybackManager *pm,
+                                          SDL_Renderer *renderer, int x,
+                                          int y) {
+  (void)renderer;
+  if (!pm) {
+    return false;
+  }
+
+  pm->pointer_x = x;
+  pm->pointer_y = y;
+
+  if (pm->mode == APP_MODE_LIVE) {
+    return false;
+  }
+
+  if (pm->delete_dialog_open) {
+    for (int i = 0; i < 3; ++i) {
+      if (ui_rect_contains(&pm->dlg_option_rects[i], x, y)) {
+        pm->delete_dialog_selection = i;
+        break;
+      }
+    }
+    return true;
+  }
+
+  if (!pm->pointer_down) {
+    return true;
+  }
+
+  if (pm->dragging_pip_map) {
+    update_pip_pan_from_point(pm, x, y);
+    return true;
+  }
+
+  int total_dx = x - pm->down_start_x;
+  int total_dy = y - pm->down_start_y;
+  if (!pm->is_dragging &&
+      (abs(total_dx) > 10 || abs(total_dy) > 10)) {
+    pm->is_dragging = true;
+  }
+
+  if (pm->is_dragging && pm->mode == APP_MODE_PLAYBACK &&
+      pm->view_mode == PLAY_VIEW_SINGLE && pm->zoom_step_index > 0) {
+    int dx = x - pm->last_drag_x;
+    int dy = y - pm->last_drag_y;
+    float zoom = ZOOM_FACTORS[pm->zoom_step_index];
+    int vw = pm->pb_viewport_rect.w > 0 ? pm->pb_viewport_rect.w : 1024;
+    int vh = pm->pb_viewport_rect.h > 0 ? pm->pb_viewport_rect.h : 600;
+    pm->pan_center_x -= (float)dx / ((float)vw * zoom);
+    pm->pan_center_y -= (float)dy / ((float)vh * zoom);
+    clamp_pan_center(pm);
+  }
+
+  pm->last_drag_x = x;
+  pm->last_drag_y = y;
+  return true;
+}
+
+bool playback_manager_handle_pointer_up(PlaybackManager *pm,
+                                        SDL_Renderer *renderer, int x, int y) {
+  if (!pm || !renderer || pm->mode == APP_MODE_LIVE) {
+    return false;
+  }
+
+  pm->pointer_x = x;
+  pm->pointer_y = y;
+  bool was_dragging = pm->is_dragging;
+  bool was_pip = pm->dragging_pip_map;
+  int start_x = pm->down_start_x;
+  int start_y = pm->down_start_y;
+  pm->pointer_down = false;
+  pm->is_dragging = false;
+  pm->dragging_pip_map = false;
+
+  if (was_pip) {
+    return true;
+  }
+
+  /* 1. Quick Review mode */
+  if (pm->mode == APP_MODE_QUICK_REVIEW) {
+    if (ui_rect_contains(&pm->qr_btn_delete, x, y) &&
+        ui_rect_contains(&pm->qr_btn_delete, start_x, start_y)) {
+      if (pm->quick_review_protected) {
+        set_toast(pm, "[WARN] Protected photo cannot be deleted", 2200);
+      } else if (async_save_queue_cancel_or_delete(pm->save_queue, pm->dcf,
+                                                   pm->quick_review_filepath)) {
+        printf("[-] クイックレビュー: 直前の撮影画像を破棄しました (%s)\n",
+               pm->quick_review_filepath);
+        set_toast(pm, "Discarded last captured photo", 2200);
+        playback_manager_return_to_live(pm);
+      }
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->qr_btn_protect, x, y) &&
+        ui_rect_contains(&pm->qr_btn_protect, start_x, start_y)) {
+      bool next_prot = !pm->quick_review_protected;
+      if (async_save_queue_set_protected(
+              pm->save_queue, pm->quick_review_filepath, next_prot)) {
+        pm->quick_review_protected = next_prot;
+        pm->quick_review_start_ms = SDL_GetTicks();
+        set_toast(pm,
+                  next_prot ? "[PROTECTED] Last captured photo protected"
+                            : "Photo protection removed",
+                  2000);
+      }
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->qr_btn_playback, x, y) &&
+        ui_rect_contains(&pm->qr_btn_playback, start_x, start_y)) {
+      playback_manager_enter_playback(pm, renderer, pm->quick_review_filepath);
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->qr_btn_live, x, y) &&
+        ui_rect_contains(&pm->qr_btn_live, start_x, start_y)) {
+      playback_manager_return_to_live(pm);
+      return true;
+    }
+
+    /* Tapping outside buttons on the Quick Review image returns to Live View */
+    if (!was_dragging) {
+      playback_manager_return_to_live(pm);
+    }
+    return true;
+  }
+
+  /* 2. Delete Confirmation Modal Dialog */
+  if (pm->delete_dialog_open) {
+    for (int i = 0; i < 3; ++i) {
+      if (ui_rect_contains(&pm->dlg_option_rects[i], x, y) &&
+          ui_rect_contains(&pm->dlg_option_rects[i], start_x, start_y)) {
+        pm->delete_dialog_open = false;
+        if (i == 0) {
+          execute_delete_single(pm, renderer);
+        } else if (i == 1) {
+          execute_delete_all_unprotected(pm, renderer);
+        }
+        return true;
+      }
+    }
+    /* Tapping outside the modal dialog box cancels it */
+    if (!ui_rect_contains(&pm->dlg_rect, x, y) &&
+        !ui_rect_contains(&pm->dlg_rect, start_x, start_y)) {
+      pm->delete_dialog_open = false;
+    }
+    return true;
+  }
+
+  /* 3. Empty DCIM state */
+  if (pm->media_list.count == 0 || pm->current_index < 0) {
+    if (ui_rect_contains(&pm->empty_btn_live, x, y) || !was_dragging) {
+      playback_manager_return_to_live(pm);
+    }
+    return true;
+  }
+
+  int count = (int)pm->media_list.count;
+
+  /* 4. Grid View (3x3 / 4x4) */
+  if (pm->view_mode != PLAY_VIEW_SINGLE) {
+    int per_page = get_grid_cells_per_page(pm->view_mode);
+
+    /* Swipe gesture in grid view switches page */
+    if (was_dragging) {
+      int dx = x - start_x;
+      int dy = y - start_y;
+      if (abs(dx) >= 48 && abs(dx) > abs(dy)) {
+        if (dx < 0 && pm->current_index + per_page < count) {
+          pm->current_index += per_page;
+        } else if (dx > 0 && pm->current_index - per_page >= 0) {
+          pm->current_index -= per_page;
+        }
+      } else if (abs(dy) >= 48 && abs(dy) > abs(dx)) {
+        if (dy < 0 && pm->current_index + per_page < count) {
+          pm->current_index += per_page;
+        } else if (dy > 0 && pm->current_index - per_page >= 0) {
+          pm->current_index -= per_page;
+        }
+      }
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->grid_btn_live, x, y) &&
+        ui_rect_contains(&pm->grid_btn_live, start_x, start_y)) {
+      playback_manager_return_to_live(pm);
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->grid_btn_mode, x, y) &&
+        ui_rect_contains(&pm->grid_btn_mode, start_x, start_y)) {
+      if (pm->view_mode == PLAY_VIEW_GRID_3X3) {
+        pm->view_mode = PLAY_VIEW_GRID_4X4;
+      } else {
+        pm->view_mode = PLAY_VIEW_GRID_3X3;
+      }
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->grid_btn_prev_page, x, y) &&
+        ui_rect_contains(&pm->grid_btn_prev_page, start_x, start_y)) {
+      pm->current_index -= per_page;
+      if (pm->current_index < 0) {
+        pm->current_index = 0;
+      }
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->grid_btn_next_page, x, y) &&
+        ui_rect_contains(&pm->grid_btn_next_page, start_x, start_y)) {
+      pm->current_index += per_page;
+      if (pm->current_index >= count) {
+        pm->current_index = count - 1;
+      }
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->grid_btn_lock, x, y) &&
+        ui_rect_contains(&pm->grid_btn_lock, start_x, start_y)) {
+      toggle_current_protection(pm);
+      return true;
+    }
+
+    if (ui_rect_contains(&pm->grid_btn_delete, x, y) &&
+        ui_rect_contains(&pm->grid_btn_delete, start_x, start_y)) {
+      pm->delete_dialog_open = true;
+      pm->delete_dialog_selection = 0;
+      return true;
+    }
+
+    /* Single tap on any thumbnail cell selects it and immediately opens 1x view */
+    for (int i = 0; i < per_page; ++i) {
+      int media_idx = pm->grid_cell_media_indices[i];
+      if (media_idx >= 0 && media_idx < count &&
+          ui_rect_contains(&pm->grid_cell_rects[i], x, y) &&
+          ui_rect_contains(&pm->grid_cell_rects[i], start_x, start_y)) {
+        pm->current_index = media_idx;
+        pm->view_mode = PLAY_VIEW_SINGLE;
+        load_current_photo(pm, renderer);
+        return true;
+      }
+    }
+
+    return true;
+  }
+
+  /* 5. Single Photo View (PLAY_VIEW_SINGLE) */
+  if (was_dragging) {
+    /* In 1x mode, horizontal swipe switches previous/next photo */
+    if (pm->zoom_step_index == 0 && count > 1) {
+      int dx = x - start_x;
+      int dy = y - start_y;
+      if (abs(dx) >= 48 && abs(dx) > abs(dy)) {
+        if (dx < 0) {
+          /* Swiped left -> next photo */
+          pm->current_index = (pm->current_index + 1) % count;
+          load_current_photo(pm, renderer);
+        } else {
+          /* Swiped right -> previous photo */
+          pm->current_index = (pm->current_index - 1 + count) % count;
+          load_current_photo(pm, renderer);
+        }
+      }
+    }
+    return true;
+  }
+
+  /* Top toolbar buttons in Single View */
+  if (ui_rect_contains(&pm->pb_btn_live, x, y) &&
+      ui_rect_contains(&pm->pb_btn_live, start_x, start_y)) {
+    playback_manager_return_to_live(pm);
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_grid, x, y) &&
+      ui_rect_contains(&pm->pb_btn_grid, start_x, start_y)) {
+    reset_zoom_and_pan(pm);
+    pm->view_mode = PLAY_VIEW_GRID_3X3;
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_zoom_in, x, y) &&
+      ui_rect_contains(&pm->pb_btn_zoom_in, start_x, start_y)) {
+    if (pm->zoom_step_index < ZOOM_STEP_COUNT - 1) {
+      pm->zoom_step_index++;
+      clamp_pan_center(pm);
+    }
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_zoom_out, x, y) &&
+      ui_rect_contains(&pm->pb_btn_zoom_out, start_x, start_y)) {
+    if (pm->zoom_step_index > 0) {
+      pm->zoom_step_index--;
+      clamp_pan_center(pm);
+    } else {
+      pm->view_mode = PLAY_VIEW_GRID_3X3;
+    }
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_zoom_reset, x, y) &&
+      ui_rect_contains(&pm->pb_btn_zoom_reset, start_x, start_y)) {
+    reset_zoom_and_pan(pm);
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_info, x, y) &&
+      ui_rect_contains(&pm->pb_btn_info, start_x, start_y)) {
+    pm->show_detail_info = !pm->show_detail_info;
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_lock, x, y) &&
+      ui_rect_contains(&pm->pb_btn_lock, start_x, start_y)) {
+    toggle_current_protection(pm);
+    return true;
+  }
+
+  if (ui_rect_contains(&pm->pb_btn_delete, x, y) &&
+      ui_rect_contains(&pm->pb_btn_delete, start_x, start_y)) {
+    pm->delete_dialog_open = true;
+    pm->delete_dialog_selection = 0;
+    return true;
+  }
+
+  /* Left/Right previous/next buttons when at 1x zoom */
+  if (pm->zoom_step_index == 0 && count > 1) {
+    if (ui_rect_contains(&pm->pb_btn_prev, x, y) &&
+        ui_rect_contains(&pm->pb_btn_prev, start_x, start_y)) {
+      pm->current_index = (pm->current_index - 1 + count) % count;
+      load_current_photo(pm, renderer);
+      return true;
+    }
+    if (ui_rect_contains(&pm->pb_btn_next, x, y) &&
+        ui_rect_contains(&pm->pb_btn_next, start_x, start_y)) {
+      pm->current_index = (pm->current_index + 1) % count;
+      load_current_photo(pm, renderer);
+      return true;
+    }
+  }
+
+  /* Double-tap on photo to zoom in/out centered at tapped point */
+  if (ui_rect_contains(&pm->pb_viewport_rect, x, y)) {
+    uint32_t now = SDL_GetTicks();
+    if (pm->last_tap_ms > 0 && !SDL_TICKS_PASSED(now, pm->last_tap_ms + 360) &&
+        abs(x - pm->last_tap_x) < 36 && abs(y - pm->last_tap_y) < 36) {
+      pm->last_tap_ms = 0;
+      if (pm->zoom_step_index == 0) {
+        /* Zoom into 2x centered on the tapped point */
+        float rel_x = (float)(x - pm->pb_viewport_rect.x) /
+                      (float)pm->pb_viewport_rect.w;
+        float rel_y = (float)(y - pm->pb_viewport_rect.y) /
+                      (float)pm->pb_viewport_rect.h;
+        pm->zoom_step_index = 1;
+        pm->pan_center_x = rel_x;
+        pm->pan_center_y = rel_y;
+        clamp_pan_center(pm);
+      } else {
+        reset_zoom_and_pan(pm);
+      }
+      return true;
+    }
+    pm->last_tap_ms = now;
+    pm->last_tap_x = x;
+    pm->last_tap_y = y;
+  }
+
+  return true;
+}
+
+bool playback_manager_handle_wheel(PlaybackManager *pm, SDL_Renderer *renderer,
+                                   int wheel_y, int pointer_x, int pointer_y) {
+  if (!pm || !renderer || pm->mode != APP_MODE_PLAYBACK || wheel_y == 0) {
+    return false;
+  }
+
+  pm->pointer_x = pointer_x;
+  pm->pointer_y = pointer_y;
+
+  if (pm->delete_dialog_open) {
+    if (wheel_y > 0) {
+      pm->delete_dialog_selection = (pm->delete_dialog_selection + 2) % 3;
+    } else {
+      pm->delete_dialog_selection = (pm->delete_dialog_selection + 1) % 3;
+    }
+    return true;
+  }
+
+  int count = (int)pm->media_list.count;
+  if (count <= 0) {
+    return true;
+  }
+
+  if (pm->view_mode != PLAY_VIEW_SINGLE) {
+    int per_page = get_grid_cells_per_page(pm->view_mode);
+    if (wheel_y > 0) {
+      pm->current_index -= per_page;
+      if (pm->current_index < 0) {
+        pm->current_index = 0;
+      }
+    } else {
+      pm->current_index += per_page;
+      if (pm->current_index >= count) {
+        pm->current_index = count - 1;
+      }
+    }
+    return true;
+  }
+
+  /* In Single Photo View: mouse wheel zooms in/out around cursor */
+  if (wheel_y > 0) {
+    if (pm->zoom_step_index < ZOOM_STEP_COUNT - 1) {
+      if (pm->zoom_step_index == 0 &&
+          ui_rect_contains(&pm->pb_viewport_rect, pointer_x, pointer_y) &&
+          pm->pb_viewport_rect.w > 0 && pm->pb_viewport_rect.h > 0) {
+        pm->pan_center_x = (float)(pointer_x - pm->pb_viewport_rect.x) /
+                           (float)pm->pb_viewport_rect.w;
+        pm->pan_center_y = (float)(pointer_y - pm->pb_viewport_rect.y) /
+                           (float)pm->pb_viewport_rect.h;
+      }
+      pm->zoom_step_index++;
+      clamp_pan_center(pm);
+    }
+  } else {
+    if (pm->zoom_step_index > 0) {
+      pm->zoom_step_index--;
+      clamp_pan_center(pm);
+    } else {
+      pm->view_mode = PLAY_VIEW_GRID_3X3;
+    }
+  }
+  return true;
+}
+
 void playback_manager_update(PlaybackManager *pm, SDL_Renderer *renderer) {
   (void)renderer;
   if (!pm) {
@@ -1169,8 +1655,11 @@ void playback_manager_update(PlaybackManager *pm, SDL_Renderer *renderer) {
  * -------------------------------------------------------------------------- */
 
 static void render_zoom_pip_map(SDL_Renderer *renderer, int win_w, int win_h,
-                                const PlaybackManager *pm) {
+                                PlaybackManager *pm) {
   if (!renderer || !pm || pm->zoom_step_index <= 0) {
+    if (pm) {
+      pm->pb_pip_rect = (SDL_Rect){0, 0, 0, 0};
+    }
     return;
   }
 
@@ -1188,6 +1677,7 @@ static void render_zoom_pip_map(SDL_Renderer *renderer, int win_w, int win_h,
   }
 
   SDL_Rect outer = {win_w - map_w - 16, win_h - map_h - 64, map_w, map_h};
+  pm->pb_pip_rect = outer;
   SDL_Color bg = {0, 0, 0, 180};
   SDL_Color border = {200, 200, 200, 180};
   text_renderer_draw_panel(renderer, &outer, bg, border);
@@ -1229,6 +1719,7 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
   SDL_Rect viewport_rect;
   calculate_aspect_fit_rect(pm->current_tex_w, pm->current_tex_h,
                             &screen_bounds, &viewport_rect);
+  pm->pb_viewport_rect = viewport_rect;
 
   if (pm->current_texture && pm->current_tex_w > 0 && pm->current_tex_h > 0) {
     float zoom = ZOOM_FACTORS[pm->zoom_step_index];
@@ -1260,30 +1751,98 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
 
   const DcfMediaEntry *entry = &pm->media_list.entries[pm->current_index];
 
-  /* Top guide & status bar */
-  const char *top_guide =
-      pm->zoom_step_index > 0
-          ? "[PLAY ZOOM] [Arrows]:Pan  [Z/+/-]:Zoom  [0/Esc]:1x  [P/Space]:Live"
-          : "[PLAY] [Left/Rgt]:Prev/Next  [Z/+]:Zoom  [G/-]:Grid  [L]:Lock  "
-            "[Del]:Delete  [I]:Info  [P]:Live";
+  /* Top interactive toolbar buttons */
+  int bx = 12;
+  int by = 10;
+  int gap = 8;
+  int btn_h = 38;
+  SDL_Rect r;
+
+  text_renderer_draw_button(renderer, "Live [P]", bx, by, 86, btn_h,
+                            UI_BTN_STYLE_ACTIVE,
+                            is_btn_hovered(pm, &pm->pb_btn_live),
+                            is_btn_pressed(pm, &pm->pb_btn_live), &r);
+  pm->pb_btn_live = r;
+  bx += r.w + gap;
+
+  text_renderer_draw_button(renderer, "Grid [G]", bx, by, 86, btn_h,
+                            UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->pb_btn_grid),
+                            is_btn_pressed(pm, &pm->pb_btn_grid), &r);
+  pm->pb_btn_grid = r;
+  bx += r.w + gap;
+
+  text_renderer_draw_button(renderer, "Zoom+ [+]", bx, by, 90, btn_h,
+                            pm->zoom_step_index > 0 ? UI_BTN_STYLE_ACTIVE
+                                                    : UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->pb_btn_zoom_in),
+                            is_btn_pressed(pm, &pm->pb_btn_zoom_in), &r);
+  pm->pb_btn_zoom_in = r;
+  bx += r.w + gap;
+
+  text_renderer_draw_button(renderer, "Zoom- [-]", bx, by, 90, btn_h,
+                            UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->pb_btn_zoom_out),
+                            is_btn_pressed(pm, &pm->pb_btn_zoom_out), &r);
+  pm->pb_btn_zoom_out = r;
+  bx += r.w + gap;
+
+  if (pm->zoom_step_index > 0) {
+    text_renderer_draw_button(renderer, "1:1 [0]", bx, by, 72, btn_h,
+                              UI_BTN_STYLE_DEFAULT,
+                              is_btn_hovered(pm, &pm->pb_btn_zoom_reset),
+                              is_btn_pressed(pm, &pm->pb_btn_zoom_reset), &r);
+    pm->pb_btn_zoom_reset = r;
+    bx += r.w + gap;
+  } else {
+    pm->pb_btn_zoom_reset = (SDL_Rect){0, 0, 0, 0};
+  }
+
+  text_renderer_draw_button(renderer, "Info [I]", bx, by, 80, btn_h,
+                            pm->show_detail_info ? UI_BTN_STYLE_ACTIVE
+                                                 : UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->pb_btn_info),
+                            is_btn_pressed(pm, &pm->pb_btn_info), &r);
+  pm->pb_btn_info = r;
+  bx += r.w + gap;
+
+  text_renderer_draw_button(
+      renderer, entry->is_protected ? "Locked [L]" : "Lock [L]", bx, by, 92,
+      btn_h, entry->is_protected ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DEFAULT,
+      is_btn_hovered(pm, &pm->pb_btn_lock),
+      is_btn_pressed(pm, &pm->pb_btn_lock), &r);
+  pm->pb_btn_lock = r;
+  bx += r.w + gap;
+
+  text_renderer_draw_button(renderer, "Delete [Del]", bx, by, 104, btn_h,
+                            UI_BTN_STYLE_DANGER,
+                            is_btn_hovered(pm, &pm->pb_btn_delete),
+                            is_btn_pressed(pm, &pm->pb_btn_delete), &r);
+  pm->pb_btn_delete = r;
+
+  /* Left/Right previous/next navigation buttons in 1x mode */
+  if (pm->zoom_step_index == 0 && pm->media_list.count > 1) {
+    int nav_y = (win_h - 68) / 2;
+    text_renderer_draw_button(renderer, "<", 12, nav_y, 48, 68,
+                              UI_BTN_STYLE_DEFAULT,
+                              is_btn_hovered(pm, &pm->pb_btn_prev),
+                              is_btn_pressed(pm, &pm->pb_btn_prev),
+                              &pm->pb_btn_prev);
+    text_renderer_draw_button(renderer, ">", win_w - 60, nav_y, 48, 68,
+                              UI_BTN_STYLE_DEFAULT,
+                              is_btn_hovered(pm, &pm->pb_btn_next),
+                              is_btn_pressed(pm, &pm->pb_btn_next),
+                              &pm->pb_btn_next);
+  } else {
+    pm->pb_btn_prev = (SDL_Rect){0, 0, 0, 0};
+    pm->pb_btn_next = (SDL_Rect){0, 0, 0, 0};
+  }
+
   SDL_Color white = {255, 255, 255, 255};
   SDL_Color panel_bg = {0, 0, 0, 185};
   SDL_Color panel_border = {255, 255, 255, 70};
-  text_renderer_draw_badge(renderer, top_guide, 12, 12, white, panel_bg,
-                           panel_border, NULL);
 
-  /* Protection Lock badge at top-right */
-  if (entry->is_protected) {
-    SDL_Color lock_fg = {255, 230, 80, 255};
-    SDL_Color lock_bg = {90, 60, 0, 210};
-    SDL_Color lock_bd = {255, 200, 40, 220};
-    int tw = 0;
-    text_renderer_measure_text("[LOCKED / PROTECTED]", &tw, NULL);
-    text_renderer_draw_badge(renderer, "[LOCKED / PROTECTED]", win_w - tw - 38,
-                             12, lock_fg, lock_bg, lock_bd, NULL);
-  }
-
-  /* Detailed Exif / Metadata Panel (top-left under guide when enabled) */
+  /* Detailed Exif / Metadata Panel (bottom-left when enabled) */
   if (pm->show_detail_info) {
     char line1[640];
     char line2[256];
@@ -1400,25 +1959,87 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
   int cur_page = pm->current_index / per_page;
   int start_idx = cur_page * per_page;
 
-  /* Top guide bar */
-  char header[160];
-  snprintf(
-      header, sizeof(header),
-      "[INDEX %dx%d] Page %d/%d (%zu photos)   [Arrows]:Move  [Enter/Z]:Open  "
-      "[G]:Grid Size  [L]:Lock  [Del]:Delete  [P]:Live",
-      cols, rows, cur_page + 1, total_pages, pm->media_list.count);
+  /* Top interactive toolbar */
+  int bx = 12;
+  int by = 10;
+  int gap_btn = 8;
+  int btn_h = 38;
+  SDL_Rect r;
+
+  text_renderer_draw_button(renderer, "Live [P]", bx, by, 86, btn_h,
+                            UI_BTN_STYLE_ACTIVE,
+                            is_btn_hovered(pm, &pm->grid_btn_live),
+                            is_btn_pressed(pm, &pm->grid_btn_live), &r);
+  pm->grid_btn_live = r;
+  bx += r.w + gap_btn;
+
+  char mode_lbl[32];
+  snprintf(mode_lbl, sizeof(mode_lbl), "Grid %dx%d [G]", cols, rows);
+  text_renderer_draw_button(renderer, mode_lbl, bx, by, 114, btn_h,
+                            UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->grid_btn_mode),
+                            is_btn_pressed(pm, &pm->grid_btn_mode), &r);
+  pm->grid_btn_mode = r;
+  bx += r.w + gap_btn;
+
+  text_renderer_draw_button(renderer, "< Page", bx, by, 82, btn_h,
+                            UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->grid_btn_prev_page),
+                            is_btn_pressed(pm, &pm->grid_btn_prev_page), &r);
+  pm->grid_btn_prev_page = r;
+  bx += r.w + gap_btn;
+
+  text_renderer_draw_button(renderer, "Page >", bx, by, 82, btn_h,
+                            UI_BTN_STYLE_DEFAULT,
+                            is_btn_hovered(pm, &pm->grid_btn_next_page),
+                            is_btn_pressed(pm, &pm->grid_btn_next_page), &r);
+  pm->grid_btn_next_page = r;
+  bx += r.w + gap_btn;
+
+  const DcfMediaEntry *cur_sel =
+      (pm->current_index >= 0 &&
+       (size_t)pm->current_index < pm->media_list.count)
+          ? &pm->media_list.entries[pm->current_index]
+          : NULL;
+
+  text_renderer_draw_button(
+      renderer,
+      (cur_sel && cur_sel->is_protected) ? "Locked [L]" : "Lock [L]", bx, by,
+      92, btn_h,
+      (cur_sel && cur_sel->is_protected) ? UI_BTN_STYLE_ACCENT
+                                         : UI_BTN_STYLE_DEFAULT,
+      is_btn_hovered(pm, &pm->grid_btn_lock),
+      is_btn_pressed(pm, &pm->grid_btn_lock), &r);
+  pm->grid_btn_lock = r;
+  bx += r.w + gap_btn;
+
+  text_renderer_draw_button(renderer, "Delete [Del]", bx, by, 104, btn_h,
+                            UI_BTN_STYLE_DANGER,
+                            is_btn_hovered(pm, &pm->grid_btn_delete),
+                            is_btn_pressed(pm, &pm->grid_btn_delete), &r);
+  pm->grid_btn_delete = r;
+  bx += r.w + gap_btn;
+
+  char page_badge[96];
+  snprintf(page_badge, sizeof(page_badge), "Page %d/%d (%zu)", cur_page + 1,
+           total_pages, pm->media_list.count);
   SDL_Color white = {255, 255, 255, 255};
   SDL_Color panel_bg = {0, 0, 0, 190};
   SDL_Color panel_border = {255, 255, 255, 70};
-  text_renderer_draw_badge(renderer, header, 12, 12, white, panel_bg,
+  text_renderer_draw_badge(renderer, page_badge, bx, by + 3, white, panel_bg,
                            panel_border, NULL);
 
   int margin_x = 20;
-  int top_y = 54;
+  int top_y = 56;
   int bottom_y = win_h - 46;
   int avail_w = win_w - margin_x * 2;
   int avail_h = bottom_y - top_y;
   int gap = 10;
+
+  for (int i = 0; i < PLAYBACK_MAX_GRID_CELLS; ++i) {
+    pm->grid_cell_rects[i] = (SDL_Rect){0, 0, 0, 0};
+    pm->grid_cell_media_indices[i] = -1;
+  }
 
   int cell_w = (avail_w - gap * (cols - 1)) / cols;
   int cell_h = (avail_h - gap * (rows - 1)) / rows;
@@ -1432,13 +2053,20 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
       break;
     }
 
-    int r = i / cols;
-    int c = i % cols;
-    SDL_Rect cell_rect = {margin_x + c * (cell_w + gap),
-                          top_y + r * (cell_h + gap), cell_w, cell_h};
+    int r_idx = i / cols;
+    int c_idx = i % cols;
+    SDL_Rect cell_rect = {margin_x + c_idx * (cell_w + gap),
+                          top_y + r_idx * (cell_h + gap), cell_w, cell_h};
+    pm->grid_cell_rects[i] = cell_rect;
+    pm->grid_cell_media_indices[i] = media_idx;
 
+    bool cell_hovered = is_btn_hovered(pm, &cell_rect);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 28, 28, 34, 255);
+    if (cell_hovered) {
+      SDL_SetRenderDrawColor(renderer, 46, 52, 66, 255);
+    } else {
+      SDL_SetRenderDrawColor(renderer, 28, 28, 34, 255);
+    }
     SDL_RenderFillRect(renderer, &cell_rect);
 
     if (pm->grid_textures[i]) {
@@ -1474,7 +2102,7 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
                                NULL);
     }
 
-    /* Highlight border for selected thumbnail */
+    /* Highlight border for selected or hovered thumbnail */
     if (media_idx == pm->current_index) {
       SDL_SetRenderDrawColor(renderer, 0, 220, 255, 255);
       for (int b = 0; b < 3; ++b) {
@@ -1482,6 +2110,9 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
                              cell_rect.w + b * 2, cell_rect.h + b * 2};
         SDL_RenderDrawRect(renderer, &sel_rect);
       }
+    } else if (cell_hovered) {
+      SDL_SetRenderDrawColor(renderer, 140, 210, 255, 230);
+      SDL_RenderDrawRect(renderer, &cell_rect);
     } else {
       SDL_SetRenderDrawColor(renderer, 90, 90, 100, 200);
       SDL_RenderDrawRect(renderer, &cell_rect);
@@ -1493,7 +2124,8 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
       (size_t)pm->current_index < pm->media_list.count) {
     const DcfMediaEntry *sel = &pm->media_list.entries[pm->current_index];
     char footer[640];
-    snprintf(footer, sizeof(footer), "Selected [%d/%zu]: %s   (%.2f MiB)%s",
+    snprintf(footer, sizeof(footer),
+             "Selected [%d/%zu]: %s   (%.2f MiB)%s   (Tap thumbnail to open)",
              pm->current_index + 1, pm->media_list.count, sel->display_name,
              (double)sel->file_size / (1024.0 * 1024.0),
              sel->is_protected ? "   [PROTECTED]" : "");
@@ -1502,8 +2134,8 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
   }
 }
 
-static void render_delete_dialog(const PlaybackManager *pm,
-                                 SDL_Renderer *renderer, int win_w, int win_h) {
+static void render_delete_dialog(PlaybackManager *pm, SDL_Renderer *renderer,
+                                 int win_w, int win_h) {
   if (!pm || !pm->delete_dialog_open || pm->current_index < 0 ||
       (size_t)pm->current_index >= pm->media_list.count) {
     return;
@@ -1516,8 +2148,9 @@ static void render_delete_dialog(const PlaybackManager *pm,
   SDL_RenderFillRect(renderer, &full);
 
   int dlg_w = 500;
-  int dlg_h = 230;
+  int dlg_h = 240;
   SDL_Rect dlg = {(win_w - dlg_w) / 2, (win_h - dlg_h) / 2, dlg_w, dlg_h};
+  pm->dlg_rect = dlg;
   SDL_Color bg = {22, 24, 30, 245};
   SDL_Color border = {255, 110, 110, 230};
   text_renderer_draw_panel(renderer, &dlg, bg, border);
@@ -1537,23 +2170,23 @@ static void render_delete_dialog(const PlaybackManager *pm,
       "[3] Cancel"};
 
   for (int i = 0; i < 3; ++i) {
-    SDL_Rect row = {dlg.x + 20, dlg.y + 62 + i * 42, dlg.w - 40, 34};
+    SDL_Rect row = {dlg.x + 20, dlg.y + 58 + i * 44, dlg.w - 40, 38};
+    pm->dlg_option_rects[i] = row;
     bool selected = (pm->delete_dialog_selection == i);
-    SDL_Color row_bg =
-        selected ? (SDL_Color){180, 45, 45, 230} : (SDL_Color){45, 48, 58, 220};
-    SDL_Color row_bd = selected ? (SDL_Color){255, 220, 120, 255}
-                                : (SDL_Color){90, 95, 110, 180};
-    text_renderer_draw_panel(renderer, &row, row_bg, row_bd);
-
-    SDL_Color txt_col = {255, 255, 255, 255};
-    text_renderer_draw_text(renderer, options[i], row.x + 12, row.y + 7,
-                            txt_col, NULL, NULL);
+    bool hovered = is_btn_hovered(pm, &row);
+    bool pressed = is_btn_pressed(pm, &row);
+    UiButtonStyle style = UI_BTN_STYLE_DEFAULT;
+    if (selected) {
+      style = (i == 2) ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DANGER;
+    }
+    text_renderer_draw_button(renderer, options[i], row.x, row.y, row.w, row.h,
+                              style, hovered, pressed, &pm->dlg_option_rects[i]);
   }
 
   SDL_Color hint_col = {190, 195, 205, 255};
-  text_renderer_draw_text(renderer,
-                          "[Up/Down]:Select   [Enter]:Confirm   [Esc]:Cancel",
-                          dlg.x + 20, dlg.y + dlg.h - 28, hint_col, NULL, NULL);
+  text_renderer_draw_text(
+      renderer, "Tap option or [Up/Down]:Select  [Enter]:Confirm  [Esc]:Cancel",
+      dlg.x + 20, dlg.y + dlg.h - 28, hint_col, NULL, NULL);
 }
 
 void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
@@ -1589,23 +2222,42 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     SDL_Color border = {120, 255, 150, 160};
     text_renderer_draw_badge(renderer, banner, 12, 12, green, bg, border, NULL);
 
-    if (pm->quick_review_protected) {
-      SDL_Color lock_fg = {255, 230, 80, 255};
-      SDL_Color lock_bg = {90, 60, 0, 210};
-      SDL_Color lock_bd = {255, 200, 40, 220};
-      int tw = 0;
-      text_renderer_measure_text("[PROTECTED]", &tw, NULL);
-      text_renderer_draw_badge(renderer, "[PROTECTED]", win_w - tw - 38, 12,
-                               lock_fg, lock_bg, lock_bd, NULL);
-    }
+    /* Bottom interactive action buttons for Quick Review */
+    int bx = 12;
+    int by = win_h - 50;
+    int gap = 10;
+    int btn_h = 40;
+    SDL_Rect r;
 
-    const char *bottom_guide =
-        "[Del / BS]: Discard   |   [L]: Protect   |   "
-        "[P]: Playback   |   [Space]: Live View";
-    SDL_Color white = {255, 255, 255, 255};
-    SDL_Color bot_border = {255, 255, 255, 80};
-    text_renderer_draw_badge(renderer, bottom_guide, 12, win_h - 44, white, bg,
-                             bot_border, NULL);
+    text_renderer_draw_button(renderer, "Delete [Del]", bx, by, 128, btn_h,
+                              UI_BTN_STYLE_DANGER,
+                              is_btn_hovered(pm, &pm->qr_btn_delete),
+                              is_btn_pressed(pm, &pm->qr_btn_delete), &r);
+    pm->qr_btn_delete = r;
+    bx += r.w + gap;
+
+    text_renderer_draw_button(
+        renderer,
+        pm->quick_review_protected ? "Protected [L]" : "Protect [L]", bx, by,
+        134, btn_h,
+        pm->quick_review_protected ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DEFAULT,
+        is_btn_hovered(pm, &pm->qr_btn_protect),
+        is_btn_pressed(pm, &pm->qr_btn_protect), &r);
+    pm->qr_btn_protect = r;
+    bx += r.w + gap;
+
+    text_renderer_draw_button(renderer, "Playback [P]", bx, by, 134, btn_h,
+                              UI_BTN_STYLE_ACTIVE,
+                              is_btn_hovered(pm, &pm->qr_btn_playback),
+                              is_btn_pressed(pm, &pm->qr_btn_playback), &r);
+    pm->qr_btn_playback = r;
+    bx += r.w + gap;
+
+    text_renderer_draw_button(renderer, "Live View [Space]", bx, by, 156,
+                              btn_h, UI_BTN_STYLE_SUCCESS,
+                              is_btn_hovered(pm, &pm->qr_btn_live),
+                              is_btn_pressed(pm, &pm->qr_btn_live), &r);
+    pm->qr_btn_live = r;
 
     playback_manager_render_toast(pm, renderer, win_w, win_h);
     return;
@@ -1613,15 +2265,19 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
 
   /* APP_MODE_PLAYBACK */
   if (pm->media_list.count == 0 || pm->current_index < 0) {
-    SDL_Color white = {255, 255, 255, 255};
-    SDL_Color bg = {30, 32, 40, 220};
-    SDL_Color bd = {120, 130, 150, 180};
     const char *empty_msg =
-        "No Images in DCIM  -  [P / Space]: Return to Live View";
+        "No Images in DCIM  -  Tap or Press [P / Space] to Return to Live View";
     int tw = 0, th = 0;
     text_renderer_measure_text(empty_msg, &tw, &th);
-    text_renderer_draw_badge(renderer, empty_msg, (win_w - tw - 24) / 2,
-                             (win_h - th - 12) / 2, white, bg, bd, NULL);
+    int bw = tw + 40;
+    int bh = 48;
+    int bx = (win_w - bw) / 2;
+    int by = (win_h - bh) / 2;
+    text_renderer_draw_button(renderer, empty_msg, bx, by, bw, bh,
+                              UI_BTN_STYLE_ACTIVE,
+                              is_btn_hovered(pm, &pm->empty_btn_live),
+                              is_btn_pressed(pm, &pm->empty_btn_live),
+                              &pm->empty_btn_live);
     playback_manager_render_toast(pm, renderer, win_w, win_h);
     return;
   }

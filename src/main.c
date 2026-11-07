@@ -58,16 +58,17 @@ static const int JPEG_QUALITY_PRESET_COUNT =
 typedef struct WbPreset {
   CameraWbMode mode;
   const char *name;
+  const char *ui_label;
 } WbPreset;
 
 static const WbPreset WB_PRESETS[] = {
-    {CAMERA_WB_MODE_AUTO, "Auto (AWB)"},
-    {CAMERA_WB_MODE_DAYLIGHT, "Daylight (晴天 ~5500K)"},
-    {CAMERA_WB_MODE_CLOUDY, "Cloudy (曇天 ~6500K)"},
-    {CAMERA_WB_MODE_SHADE, "Shade (日陰 ~7500K)"},
-    {CAMERA_WB_MODE_TUNGSTEN, "Tungsten (白熱灯 ~2800K)"},
-    {CAMERA_WB_MODE_FLUORESCENT, "Fluorescent (蛍光灯 ~4000K)"},
-    {CAMERA_WB_MODE_KELVIN, "Manual K (色温度指定)"},
+    {CAMERA_WB_MODE_AUTO, "Auto (AWB)", "AWB"},
+    {CAMERA_WB_MODE_DAYLIGHT, "Daylight (晴天 ~5500K)", "Daylight"},
+    {CAMERA_WB_MODE_CLOUDY, "Cloudy (曇天 ~6500K)", "Cloudy"},
+    {CAMERA_WB_MODE_SHADE, "Shade (日陰 ~7500K)", "Shade"},
+    {CAMERA_WB_MODE_TUNGSTEN, "Tungsten (白熱灯 ~2800K)", "Tungsten"},
+    {CAMERA_WB_MODE_FLUORESCENT, "Fluorescent (蛍光灯 ~4000K)", "Fluoresc"},
+    {CAMERA_WB_MODE_KELVIN, "Manual K (色温度指定)", "Manual K"},
 };
 static const int WB_PRESET_COUNT =
     (int)(sizeof(WB_PRESETS) / sizeof(WB_PRESETS[0]));
@@ -75,15 +76,83 @@ static const int WB_PRESET_COUNT =
 typedef struct MeteringPreset {
   CameraMeteringMode mode;
   const char *name;
+  const char *ui_label;
 } MeteringPreset;
 
 static const MeteringPreset METERING_PRESETS[] = {
-    {CAMERA_METERING_MATRIX, "Matrix (評価測光)"},
-    {CAMERA_METERING_CENTRE_WEIGHTED, "CenterWeighted (中央重点測光)"},
-    {CAMERA_METERING_SPOT, "Spot (スポット測光)"},
+    {CAMERA_METERING_MATRIX, "Matrix (評価測光)", "Matrix"},
+    {CAMERA_METERING_CENTRE_WEIGHTED, "CenterWeighted (中央重点測光)",
+     "Center"},
+    {CAMERA_METERING_SPOT, "Spot (スポット測光)", "Spot"},
 };
 static const int METERING_PRESET_COUNT =
     (int)(sizeof(METERING_PRESETS) / sizeof(METERING_PRESETS[0]));
+
+typedef enum LivePopupType {
+  LIVE_POPUP_NONE = 0,
+  LIVE_POPUP_SS = 1,
+  LIVE_POPUP_ISO = 2,
+  LIVE_POPUP_EV = 3,
+  LIVE_POPUP_WB = 4,
+  LIVE_POPUP_TEMP = 5,
+  LIVE_POPUP_MET = 6,
+  LIVE_POPUP_QUAL = 7
+} LivePopupType;
+
+typedef struct LiveUiController {
+  /* Exposure, WB, Metering & JPEG quality state indices */
+  int ev_step_index; /* -9 (-3.0 EV) to +9 (+3.0 EV) in 1/3 EV increments */
+  int iso_preset_index;
+  int shutter_preset_index;
+  int wb_preset_index;
+  int wb_kelvin_value;
+  bool awb_locked;
+  int metering_preset_index;
+  int quality_preset_index;
+
+  /* Pointer & cursor state */
+  int pointer_x;
+  int pointer_y;
+  bool pointer_down;
+  int down_x;
+  int down_y;
+  bool cursor_visible;
+  uint32_t last_mouse_move_ms;
+
+  /* Touch AF target reticle state */
+  bool af_box_visible;
+  float af_box_norm_x;
+  float af_box_norm_y;
+  uint32_t af_box_start_ms;
+
+  /* Active popup selector state */
+  LivePopupType active_popup;
+  SDL_Rect popup_panel_rect;
+  SDL_Rect popup_btn_close;
+  SDL_Rect popup_btn_minus;
+  SDL_Rect popup_btn_plus;
+  SDL_Rect popup_btn_reset;
+  SDL_Rect popup_opt_rects[16];
+  int popup_opt_count;
+
+  /* Live View interactive button hitboxes */
+  SDL_Rect top_btn_play;
+  SDL_Rect top_btn_af;
+  SDL_Rect top_btn_reset;
+  SDL_Rect top_btn_quit;
+  SDL_Rect btn_shutter;
+
+  SDL_Rect hud_btn_ss;
+  SDL_Rect hud_btn_iso;
+  SDL_Rect hud_btn_ev;
+  SDL_Rect hud_btn_wb;
+  SDL_Rect hud_btn_temp;
+  SDL_Rect hud_btn_lock;
+  SDL_Rect hud_btn_met;
+  SDL_Rect hud_btn_qual;
+
+  SDL_Rect viewport_rect;
+} LiveUiController;
 
 static void signal_handler(int signum) {
   (void)signum;
@@ -130,7 +199,8 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
   SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
       (void *)src_data, width, height, 24, effective_stride, format);
   if (!surface) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: JPEG保存用サーフェスの作成に失敗しました : %s",
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "%s: %d: JPEG保存用サーフェスの作成に失敗しました : %s",
                  __FILE__, __LINE__, SDL_GetError());
     return false;
   }
@@ -141,8 +211,9 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
   if (ret != 0) {
     fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
             IMG_GetError());
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: IMG_SaveJPG による保存に失敗しました: %s",
-                 __FILE__, __LINE__, SDL_GetError());
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "%s: %d: IMG_SaveJPG による保存に失敗しました: %s", __FILE__,
+                 __LINE__, SDL_GetError());
   } else {
     CameraExposureStatus exp_status;
     memset(&exp_status, 0, sizeof(exp_status));
@@ -165,6 +236,895 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
 
   SDL_FreeSurface(surface);
   return ret == 0;
+}
+
+static void format_ss_short(int32_t exposure_us, char *buf, size_t buf_size) {
+  if (exposure_us <= 0) {
+    snprintf(buf, buf_size, "---");
+    return;
+  }
+  if (exposure_us >= 1000000) {
+    snprintf(buf, buf_size, "%.1fs", (double)exposure_us / 1000000.0);
+  } else {
+    int denom = (int)(1000000.0 / (double)exposure_us + 0.5);
+    if (denom <= 1) {
+      snprintf(buf, buf_size, "1.0s");
+    } else {
+      snprintf(buf, buf_size, "1/%ds", denom);
+    }
+  }
+}
+
+static bool live_btn_hovered(const LiveUiController *ui, const SDL_Rect *r) {
+  return ui && ui_rect_contains(r, ui->pointer_x, ui->pointer_y);
+}
+
+static bool live_btn_pressed(const LiveUiController *ui, const SDL_Rect *r) {
+  return ui && ui->pointer_down &&
+         ui_rect_contains(r, ui->down_x, ui->down_y) &&
+         ui_rect_contains(r, ui->pointer_x, ui->pointer_y);
+}
+
+static void live_ui_step_ev(LiveUiController *ui, CameraStream *camera,
+                            int delta) {
+  int next = ui->ev_step_index + delta;
+  if (next < -9) {
+    next = -9;
+  } else if (next > 9) {
+    next = 9;
+  }
+  ui->ev_step_index = next;
+  float ev = (float)ui->ev_step_index / 3.0f;
+  camera_stream_set_ev(camera, ev);
+  printf("[-] 露出補正 (EV): %+.2f EV\n", ev);
+}
+
+static void live_ui_set_iso_index(LiveUiController *ui, CameraStream *camera,
+                                  int idx) {
+  ui->iso_preset_index =
+      (idx % ISO_PRESET_COUNT + ISO_PRESET_COUNT) % ISO_PRESET_COUNT;
+  int iso = ISO_PRESETS[ui->iso_preset_index];
+  camera_stream_set_iso(camera, iso);
+  if (iso == 0) {
+    printf("[-] ISO感度: Auto\n");
+  } else {
+    printf("[-] ISO感度: %d (手動)\n", iso);
+  }
+}
+
+static void live_ui_set_shutter_index(LiveUiController *ui,
+                                      CameraStream *camera, int idx) {
+  ui->shutter_preset_index =
+      (idx % SHUTTER_PRESET_COUNT + SHUTTER_PRESET_COUNT) %
+      SHUTTER_PRESET_COUNT;
+  int32_t shutter_us = SHUTTER_PRESETS[ui->shutter_preset_index].exposure_us;
+  camera_stream_set_shutter_speed(camera, shutter_us);
+  printf("[-] シャッタースピード: %s\n",
+         SHUTTER_PRESETS[ui->shutter_preset_index].label);
+}
+
+static void live_ui_set_wb_index(LiveUiController *ui, CameraStream *camera,
+                                 int idx) {
+  ui->wb_preset_index =
+      (idx % WB_PRESET_COUNT + WB_PRESET_COUNT) % WB_PRESET_COUNT;
+  ui->awb_locked = false;
+  CameraWbMode wb_mode = WB_PRESETS[ui->wb_preset_index].mode;
+  if (wb_mode == CAMERA_WB_MODE_KELVIN) {
+    camera_stream_set_wb_kelvin(camera, ui->wb_kelvin_value);
+    printf("[-] ホワイトバランス: %s (%dK)\n",
+           WB_PRESETS[ui->wb_preset_index].name, ui->wb_kelvin_value);
+  } else {
+    camera_stream_set_wb_mode(camera, wb_mode);
+    printf("[-] ホワイトバランス: %s\n", WB_PRESETS[ui->wb_preset_index].name);
+  }
+}
+
+static void live_ui_set_kelvin(LiveUiController *ui, CameraStream *camera,
+                               int kelvin) {
+  if (kelvin < 2500) {
+    kelvin = 2500;
+  } else if (kelvin > 10000) {
+    kelvin = 10000;
+  }
+  ui->wb_kelvin_value = kelvin;
+  ui->wb_preset_index = WB_PRESET_COUNT - 1; /* CAMERA_WB_MODE_KELVIN */
+  ui->awb_locked = false;
+  camera_stream_set_wb_kelvin(camera, ui->wb_kelvin_value);
+  printf("[-] 色温度手動指定 (WB Kelvin): %dK\n", ui->wb_kelvin_value);
+}
+
+static void live_ui_toggle_awb_lock(LiveUiController *ui,
+                                    CameraStream *camera) {
+  ui->awb_locked = !ui->awb_locked;
+  camera_stream_set_awb_lock(camera, ui->awb_locked);
+  printf("[-] AWBロック: %s\n",
+         ui->awb_locked ? "ON (現在の色合いで固定)" : "OFF (解除)");
+}
+
+static void live_ui_set_metering_index(LiveUiController *ui,
+                                       CameraStream *camera, int idx) {
+  ui->metering_preset_index =
+      (idx % METERING_PRESET_COUNT + METERING_PRESET_COUNT) %
+      METERING_PRESET_COUNT;
+  CameraMeteringMode met_mode =
+      METERING_PRESETS[ui->metering_preset_index].mode;
+  camera_stream_set_metering_mode(camera, met_mode);
+  printf("[-] 測光モード: %s\n",
+         METERING_PRESETS[ui->metering_preset_index].name);
+}
+
+static void live_ui_set_quality_index(LiveUiController *ui, int idx) {
+  ui->quality_preset_index =
+      (idx % JPEG_QUALITY_PRESET_COUNT + JPEG_QUALITY_PRESET_COUNT) %
+      JPEG_QUALITY_PRESET_COUNT;
+  g_active_jpeg_quality =
+      JPEG_QUALITY_PRESETS[ui->quality_preset_index].quality;
+  printf("[-] JPEG保存画質: %s\n",
+         JPEG_QUALITY_PRESETS[ui->quality_preset_index].name);
+}
+
+static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
+  ui->ev_step_index = 0;
+  ui->iso_preset_index = 0;
+  ui->shutter_preset_index = 0;
+  ui->wb_preset_index = 0;
+  ui->wb_kelvin_value = 5500;
+  ui->awb_locked = false;
+  ui->metering_preset_index = 0;
+  ui->quality_preset_index = 1;
+  ui->active_popup = LIVE_POPUP_NONE;
+  ui->af_box_visible = false;
+  g_active_jpeg_quality =
+      JPEG_QUALITY_PRESETS[ui->quality_preset_index].quality;
+  camera_stream_set_ev(camera, 0.0f);
+  camera_stream_set_iso(camera, 0);
+  camera_stream_set_shutter_speed(camera, 0);
+  camera_stream_set_wb_mode(camera, CAMERA_WB_MODE_AUTO);
+  camera_stream_set_awb_lock(camera, false);
+  camera_stream_set_metering_mode(camera, CAMERA_METERING_MATRIX);
+  if (camera_stream_is_af_supported(camera)) {
+    camera_stream_trigger_af(camera);
+  }
+  printf("[-] 露出・WB・測光・画質設定をリセットしました (EV: 0.0, ISO: Auto, "
+         "SS: Auto, WB: Auto, Met: Matrix, JPG: %s)\n",
+         JPEG_QUALITY_PRESETS[ui->quality_preset_index].name);
+}
+
+static void live_ui_request_shutter(CameraStream *camera,
+                                    AsyncSaveQueue *save_queue) {
+  if (camera_stream_is_still_pending(camera)) {
+    printf("[-] 撮影処理中です...\n");
+  } else if (async_save_queue_get_pending_count(save_queue) >=
+             ASYNC_SAVE_QUEUE_CAPACITY) {
+    fprintf(stderr,
+            "[警告] 保存キューが満杯です。書き込み完了をお待ちください。\n");
+  } else {
+    camera_stream_request_still(camera);
+  }
+}
+
+static void live_ui_trigger_af_at(LiveUiController *ui, CameraStream *camera,
+                                  float norm_x, float norm_y) {
+  if (!camera_stream_is_af_supported(camera)) {
+    return;
+  }
+  if (norm_x < 0.0f || norm_y < 0.0f) {
+    ui->af_box_norm_x = 0.5f;
+    ui->af_box_norm_y = 0.5f;
+    camera_stream_trigger_af(camera);
+  } else {
+    ui->af_box_norm_x = norm_x;
+    ui->af_box_norm_y = norm_y;
+    camera_stream_trigger_touch_af(camera, norm_x, norm_y);
+  }
+  ui->af_box_visible = true;
+  ui->af_box_start_ms = SDL_GetTicks();
+}
+
+static void render_af_reticle(SDL_Renderer *renderer, LiveUiController *ui,
+                              CameraStream *camera) {
+  if (!ui || !ui->af_box_visible || !camera_stream_is_af_supported(camera)) {
+    return;
+  }
+
+  uint32_t now = SDL_GetTicks();
+  CameraAfStatus af_st = camera_stream_get_af_status(camera);
+  uint32_t timeout_ms = (af_st == CAMERA_AF_STATUS_SCANNING) ? 2800U : 1600U;
+  if (SDL_TICKS_PASSED(now, ui->af_box_start_ms + timeout_ms)) {
+    ui->af_box_visible = false;
+    return;
+  }
+
+  int box_w = 76;
+  int box_h = 76;
+  int cx = ui->viewport_rect.x +
+           (int)(ui->af_box_norm_x * (float)ui->viewport_rect.w);
+  int cy = ui->viewport_rect.y +
+           (int)(ui->af_box_norm_y * (float)ui->viewport_rect.h);
+  SDL_Rect box = {cx - box_w / 2, cy - box_h / 2, box_w, box_h};
+
+  SDL_Color col = {255, 220, 40, 240}; /* Yellow: Scanning */
+  if (af_st == CAMERA_AF_STATUS_FOCUSED) {
+    col = (SDL_Color){60, 250, 100, 245}; /* Green: Focused */
+  } else if (af_st == CAMERA_AF_STATUS_FAILED) {
+    col = (SDL_Color){255, 70, 70, 245}; /* Red: Failed */
+  }
+
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+  SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, col.a);
+  for (int i = 0; i < 2; ++i) {
+    SDL_Rect r = {box.x - i, box.y - i, box.w + i * 2, box.h + i * 2};
+    SDL_RenderDrawRect(renderer, &r);
+  }
+
+  /* Center crosshair ticks */
+  SDL_RenderDrawLine(renderer, cx - 8, cy, cx + 8, cy);
+  SDL_RenderDrawLine(renderer, cx, cy - 8, cx, cy + 8);
+}
+
+static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
+                              int win_w, int win_h) {
+  ui->popup_panel_rect = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_btn_close = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_btn_minus = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_btn_plus = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_btn_reset = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_opt_count = 0;
+
+  if (ui->active_popup == LIVE_POPUP_NONE) {
+    return;
+  }
+
+  int panel_w = win_w - 24;
+  if (panel_w > 860) {
+    panel_w = 860;
+  }
+  int panel_h = (ui->active_popup == LIVE_POPUP_SS) ? 148 : 106;
+  int panel_x = 12;
+  int panel_y = win_h - 56 - panel_h - 8;
+
+  SDL_Rect panel = {panel_x, panel_y, panel_w, panel_h};
+  ui->popup_panel_rect = panel;
+
+  SDL_Color bg = {14, 18, 26, 235};
+  SDL_Color bd = {100, 210, 255, 220};
+  text_renderer_draw_panel(renderer, &panel, bg, bd);
+
+  const char *title = "";
+  switch (ui->active_popup) {
+  case LIVE_POPUP_SS:
+    title = "Shutter Speed [S / Left / Right]";
+    break;
+  case LIVE_POPUP_ISO:
+    title = "ISO Sensitivity [I]";
+    break;
+  case LIVE_POPUP_EV:
+    title = "Exposure Compensation (EV) [Up / Down]";
+    break;
+  case LIVE_POPUP_WB:
+    title = "White Balance Mode [W]";
+    break;
+  case LIVE_POPUP_TEMP:
+    title = "Color Temperature (Kelvin) [K]";
+    break;
+  case LIVE_POPUP_MET:
+    title = "AE Metering Mode [M]";
+    break;
+  case LIVE_POPUP_QUAL:
+    title = "JPEG Quality [J]";
+    break;
+  default:
+    break;
+  }
+
+  SDL_Color cyan = {130, 225, 255, 255};
+  text_renderer_draw_text(renderer, title, panel.x + 14, panel.y + 10, cyan,
+                          NULL, NULL);
+
+  text_renderer_draw_button(
+      renderer, "Close [X]", panel.x + panel.w - 102, panel.y + 6, 90, 32,
+      UI_BTN_STYLE_DEFAULT, live_btn_hovered(ui, &ui->popup_btn_close),
+      live_btn_pressed(ui, &ui->popup_btn_close), &ui->popup_btn_close);
+
+  int row_x = panel.x + 14;
+  int row_y = panel.y + 44;
+  int gap = 8;
+  int btn_h = 42;
+  SDL_Rect r;
+
+  if (ui->active_popup == LIVE_POPUP_ISO) {
+    ui->popup_opt_count = ISO_PRESET_COUNT;
+    for (int i = 0; i < ISO_PRESET_COUNT; ++i) {
+      char lbl[32];
+      if (ISO_PRESETS[i] == 0) {
+        snprintf(lbl, sizeof(lbl), "Auto");
+      } else {
+        snprintf(lbl, sizeof(lbl), "ISO %d", ISO_PRESETS[i]);
+      }
+      UiButtonStyle st = (ui->iso_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                                     : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(renderer, lbl, row_x, row_y, 88, btn_h, st,
+                                live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+                                live_btn_pressed(ui, &ui->popup_opt_rects[i]),
+                                &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_WB) {
+    ui->popup_opt_count = WB_PRESET_COUNT;
+    for (int i = 0; i < WB_PRESET_COUNT; ++i) {
+      UiButtonStyle st = (ui->wb_preset_index == i && !ui->awb_locked)
+                             ? UI_BTN_STYLE_ACTIVE
+                             : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(
+          renderer, WB_PRESETS[i].ui_label, row_x, row_y, 96, btn_h, st,
+          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_MET) {
+    ui->popup_opt_count = METERING_PRESET_COUNT;
+    for (int i = 0; i < METERING_PRESET_COUNT; ++i) {
+      UiButtonStyle st = (ui->metering_preset_index == i)
+                             ? UI_BTN_STYLE_ACTIVE
+                             : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(
+          renderer, METERING_PRESETS[i].ui_label, row_x, row_y, 130, btn_h, st,
+          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_QUAL) {
+    ui->popup_opt_count = JPEG_QUALITY_PRESET_COUNT;
+    for (int i = 0; i < JPEG_QUALITY_PRESET_COUNT; ++i) {
+      UiButtonStyle st = (ui->quality_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                                         : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(
+          renderer, JPEG_QUALITY_PRESETS[i].name, row_x, row_y, 160, btn_h, st,
+          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_EV) {
+    text_renderer_draw_button(
+        renderer, "- 1/3 EV", row_x, row_y, 104, btn_h, UI_BTN_STYLE_DEFAULT,
+        live_btn_hovered(ui, &ui->popup_btn_minus),
+        live_btn_pressed(ui, &ui->popup_btn_minus), &ui->popup_btn_minus);
+    row_x += ui->popup_btn_minus.w + gap;
+
+    char cur_ev[32];
+    snprintf(cur_ev, sizeof(cur_ev), "Reset 0.0 (Now: %+.1f)",
+             (float)ui->ev_step_index / 3.0f);
+    text_renderer_draw_button(
+        renderer, cur_ev, row_x, row_y, 180, btn_h,
+        ui->ev_step_index == 0 ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DEFAULT,
+        live_btn_hovered(ui, &ui->popup_btn_reset),
+        live_btn_pressed(ui, &ui->popup_btn_reset), &ui->popup_btn_reset);
+    row_x += ui->popup_btn_reset.w + gap;
+
+    text_renderer_draw_button(
+        renderer, "+ 1/3 EV", row_x, row_y, 104, btn_h, UI_BTN_STYLE_DEFAULT,
+        live_btn_hovered(ui, &ui->popup_btn_plus),
+        live_btn_pressed(ui, &ui->popup_btn_plus), &ui->popup_btn_plus);
+    row_x += ui->popup_btn_plus.w + gap * 2;
+
+    static const int EV_QUICK_STEPS[5] = {-6, -3, 0, 3, 6};
+    ui->popup_opt_count = 5;
+    for (int i = 0; i < 5; ++i) {
+      char lbl[24];
+      snprintf(lbl, sizeof(lbl), "%+d.0", EV_QUICK_STEPS[i] / 3);
+      UiButtonStyle st = (ui->ev_step_index == EV_QUICK_STEPS[i])
+                             ? UI_BTN_STYLE_ACTIVE
+                             : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(renderer, lbl, row_x, row_y, 64, btn_h, st,
+                                live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+                                live_btn_pressed(ui, &ui->popup_opt_rects[i]),
+                                &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_TEMP) {
+    text_renderer_draw_button(
+        renderer, "- 500K", row_x, row_y, 96, btn_h, UI_BTN_STYLE_DEFAULT,
+        live_btn_hovered(ui, &ui->popup_btn_minus),
+        live_btn_pressed(ui, &ui->popup_btn_minus), &ui->popup_btn_minus);
+    row_x += ui->popup_btn_minus.w + gap;
+
+    char cur_k[32];
+    snprintf(cur_k, sizeof(cur_k), "5500K (Now: %dK)", ui->wb_kelvin_value);
+    text_renderer_draw_button(
+        renderer, cur_k, row_x, row_y, 170, btn_h,
+        ui->wb_kelvin_value == 5500 ? UI_BTN_STYLE_ACTIVE
+                                    : UI_BTN_STYLE_DEFAULT,
+        live_btn_hovered(ui, &ui->popup_btn_reset),
+        live_btn_pressed(ui, &ui->popup_btn_reset), &ui->popup_btn_reset);
+    row_x += ui->popup_btn_reset.w + gap;
+
+    text_renderer_draw_button(
+        renderer, "+ 500K", row_x, row_y, 96, btn_h, UI_BTN_STYLE_DEFAULT,
+        live_btn_hovered(ui, &ui->popup_btn_plus),
+        live_btn_pressed(ui, &ui->popup_btn_plus), &ui->popup_btn_plus);
+    row_x += ui->popup_btn_plus.w + gap * 2;
+
+    static const int K_QUICK[5] = {2800, 4000, 5500, 6500, 8000};
+    ui->popup_opt_count = 5;
+    for (int i = 0; i < 5; ++i) {
+      char lbl[24];
+      snprintf(lbl, sizeof(lbl), "%dK", K_QUICK[i]);
+      UiButtonStyle st =
+          (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN &&
+           ui->wb_kelvin_value == K_QUICK[i])
+              ? UI_BTN_STYLE_ACTIVE
+              : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(renderer, lbl, row_x, row_y, 70, btn_h, st,
+                                live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+                                live_btn_pressed(ui, &ui->popup_opt_rects[i]),
+                                &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_SS) {
+    ui->popup_opt_count = SHUTTER_PRESET_COUNT;
+    int start_x = row_x;
+    for (int i = 0; i < SHUTTER_PRESET_COUNT; ++i) {
+      if (i == 7) {
+        row_x = start_x;
+        row_y += btn_h + 6;
+      }
+      UiButtonStyle st = (ui->shutter_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                                         : UI_BTN_STYLE_DEFAULT;
+      text_renderer_draw_button(
+          renderer, SHUTTER_PRESETS[i].label, row_x, row_y, 96, btn_h, st,
+          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
+          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
+      ui->popup_opt_rects[i] = r;
+      row_x += r.w + gap;
+    }
+  }
+}
+
+static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
+                           CameraStream *camera,
+                           const CameraExposureStatus *status,
+                           int pending_saves, int win_w, int win_h) {
+  bool af_supported = camera_stream_is_af_supported(camera);
+
+  /* 1. Touch AF reticle inside viewfinder */
+  render_af_reticle(renderer, ui, camera);
+
+  /* 2. Top action bar */
+  int tx = 12;
+  int ty = 10;
+  int tgap = 8;
+  int th = 38;
+  SDL_Rect r;
+
+  text_renderer_draw_button(renderer, "Play [P]", tx, ty, 92, th,
+                            UI_BTN_STYLE_ACTIVE,
+                            live_btn_hovered(ui, &ui->top_btn_play),
+                            live_btn_pressed(ui, &ui->top_btn_play), &r);
+  ui->top_btn_play = r;
+  tx += r.w + tgap;
+
+  if (af_supported) {
+    CameraAfStatus af_st = camera_stream_get_af_status(camera);
+    const char *af_lbl = "AF [F]";
+    UiButtonStyle af_style = UI_BTN_STYLE_DEFAULT;
+    if (af_st == CAMERA_AF_STATUS_SCANNING) {
+      af_lbl = "AF... [F]";
+      af_style = UI_BTN_STYLE_ACCENT;
+    } else if (af_st == CAMERA_AF_STATUS_FOCUSED) {
+      af_lbl = "AF OK [F]";
+      af_style = UI_BTN_STYLE_SUCCESS;
+    }
+    text_renderer_draw_button(renderer, af_lbl, tx, ty, 92, th, af_style,
+                              live_btn_hovered(ui, &ui->top_btn_af),
+                              live_btn_pressed(ui, &ui->top_btn_af), &r);
+    ui->top_btn_af = r;
+    tx += r.w + tgap;
+  } else {
+    ui->top_btn_af = (SDL_Rect){0, 0, 0, 0};
+  }
+
+  text_renderer_draw_button(renderer, "Reset [R]", tx, ty, 96, th,
+                            UI_BTN_STYLE_DEFAULT,
+                            live_btn_hovered(ui, &ui->top_btn_reset),
+                            live_btn_pressed(ui, &ui->top_btn_reset), &r);
+  ui->top_btn_reset = r;
+  tx += r.w + tgap;
+
+  text_renderer_draw_button(
+      renderer, "Quit [Q]", win_w - 102, ty, 90, th, UI_BTN_STYLE_DANGER,
+      live_btn_hovered(ui, &ui->top_btn_quit),
+      live_btn_pressed(ui, &ui->top_btn_quit), &ui->top_btn_quit);
+
+  if (pending_saves > 0) {
+    char save_lbl[48];
+    snprintf(save_lbl, sizeof(save_lbl), "Saving: %d", pending_saves);
+    SDL_Color fg = {255, 235, 110, 255};
+    SDL_Color bg = {70, 50, 0, 215};
+    SDL_Color bd = {255, 200, 50, 230};
+    text_renderer_draw_badge(renderer, save_lbl, tx + 6, ty + 3, fg, bg, bd,
+                             NULL);
+  }
+
+  /* 3. Right-edge large floating Shutter Button */
+  bool still_busy = camera_stream_is_still_pending(camera);
+  int sh_w = 98;
+  int sh_h = 84;
+  int sh_x = win_w - sh_w - 12;
+  int sh_y = (win_h - sh_h) / 2;
+  text_renderer_draw_button(
+      renderer, still_busy ? "WAIT..." : "SHOT", sh_x, sh_y, sh_w, sh_h,
+      still_busy ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DANGER,
+      live_btn_hovered(ui, &ui->btn_shutter),
+      live_btn_pressed(ui, &ui->btn_shutter), &ui->btn_shutter);
+
+  /* 4. Bottom interactive parameter HUD bar */
+  int bx = 12;
+  int bh = 40;
+  int by = win_h - bh - 10;
+  int bgap = 6;
+
+  char ss_str[48];
+  if (status->shutter_us_setting > 0) {
+    char m_ss[24];
+    format_ss_short(status->shutter_us_setting, m_ss, sizeof(m_ss));
+    snprintf(ss_str, sizeof(ss_str), "SS:%s[M]", m_ss);
+  } else {
+    char a_ss[24];
+    format_ss_short(status->actual_exposure_us, a_ss, sizeof(a_ss));
+    snprintf(ss_str, sizeof(ss_str), "SS:Auto(%s)", a_ss);
+  }
+  text_renderer_draw_button(renderer, ss_str, bx, by, 108, bh,
+                            ui->active_popup == LIVE_POPUP_SS
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (status->shutter_us_setting > 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_ss),
+                            live_btn_pressed(ui, &ui->hud_btn_ss), &r);
+  ui->hud_btn_ss = r;
+  bx += r.w + bgap;
+
+  char iso_str[48];
+  if (status->iso_setting > 0) {
+    snprintf(iso_str, sizeof(iso_str), "ISO:%d[M]", status->iso_setting);
+  } else {
+    int actual_iso = (int)(status->actual_analogue_gain * 100.0f + 0.5f);
+    if (actual_iso < 100) {
+      actual_iso = 100;
+    }
+    actual_iso = ((actual_iso + 5) / 10) * 10;
+    snprintf(iso_str, sizeof(iso_str), "ISO:Auto(%d)", actual_iso);
+  }
+  text_renderer_draw_button(renderer, iso_str, bx, by, 104, bh,
+                            ui->active_popup == LIVE_POPUP_ISO
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (status->iso_setting > 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_iso),
+                            live_btn_pressed(ui, &ui->hud_btn_iso), &r);
+  ui->hud_btn_iso = r;
+  bx += r.w + bgap;
+
+  char ev_str[32];
+  snprintf(ev_str, sizeof(ev_str), "EV:%+.1f", status->ev_compensation);
+  text_renderer_draw_button(renderer, ev_str, bx, by, 82, bh,
+                            ui->active_popup == LIVE_POPUP_EV
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (ui->ev_step_index != 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_ev),
+                            live_btn_pressed(ui, &ui->hud_btn_ev), &r);
+  ui->hud_btn_ev = r;
+  bx += r.w + bgap;
+
+  char wb_str[48];
+  snprintf(wb_str, sizeof(wb_str), "WB:%s",
+           WB_PRESETS[ui->wb_preset_index].ui_label);
+  text_renderer_draw_button(renderer, wb_str, bx, by, 96, bh,
+                            ui->active_popup == LIVE_POPUP_WB
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (ui->wb_preset_index != 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_wb),
+                            live_btn_pressed(ui, &ui->hud_btn_wb), &r);
+  ui->hud_btn_wb = r;
+  bx += r.w + bgap;
+
+  int disp_k = (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN)
+                   ? ui->wb_kelvin_value
+                   : (status->actual_colour_temp_k > 0
+                          ? ((status->actual_colour_temp_k + 50) / 100) * 100
+                          : 5500);
+  char k_str[32];
+  snprintf(k_str, sizeof(k_str), "%dK", disp_k);
+  text_renderer_draw_button(
+      renderer, k_str, bx, by, 72, bh,
+      ui->active_popup == LIVE_POPUP_TEMP
+          ? UI_BTN_STYLE_ACTIVE
+          : (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN
+                 ? UI_BTN_STYLE_ACCENT
+                 : UI_BTN_STYLE_DEFAULT),
+      live_btn_hovered(ui, &ui->hud_btn_temp),
+      live_btn_pressed(ui, &ui->hud_btn_temp), &r);
+  ui->hud_btn_temp = r;
+  bx += r.w + bgap;
+
+  text_renderer_draw_button(
+      renderer, ui->awb_locked ? "AWB:LOCK" : "AWB:Free", bx, by, 90, bh,
+      ui->awb_locked ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DEFAULT,
+      live_btn_hovered(ui, &ui->hud_btn_lock),
+      live_btn_pressed(ui, &ui->hud_btn_lock), &r);
+  ui->hud_btn_lock = r;
+  bx += r.w + bgap;
+
+  char met_str[32];
+  snprintf(met_str, sizeof(met_str), "Met:%s",
+           METERING_PRESETS[ui->metering_preset_index].ui_label);
+  text_renderer_draw_button(renderer, met_str, bx, by, 96, bh,
+                            ui->active_popup == LIVE_POPUP_MET
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (ui->metering_preset_index != 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_met),
+                            live_btn_pressed(ui, &ui->hud_btn_met), &r);
+  ui->hud_btn_met = r;
+  bx += r.w + bgap;
+
+  char q_str[32];
+  snprintf(q_str, sizeof(q_str), "JPG:%s",
+           JPEG_QUALITY_PRESETS[ui->quality_preset_index].hud_label);
+  text_renderer_draw_button(renderer, q_str, bx, by, 108, bh,
+                            ui->active_popup == LIVE_POPUP_QUAL
+                                ? UI_BTN_STYLE_ACTIVE
+                                : UI_BTN_STYLE_DEFAULT,
+                            live_btn_hovered(ui, &ui->hud_btn_qual),
+                            live_btn_pressed(ui, &ui->hud_btn_qual), &r);
+  ui->hud_btn_qual = r;
+
+  /* 5. Active parameter popup selector above HUD bar */
+  render_live_popup(renderer, ui, win_w, win_h);
+}
+
+static void toggle_popup(LiveUiController *ui, LivePopupType type) {
+  if (ui->active_popup == type) {
+    ui->active_popup = LIVE_POPUP_NONE;
+  } else {
+    ui->active_popup = type;
+  }
+}
+
+static void handle_live_pointer_up(LiveUiController *ui, CameraStream *camera,
+                                   PlaybackManager *playback_mgr,
+                                   AsyncSaveQueue *save_queue,
+                                   SDL_Renderer *renderer, int x, int y) {
+  int sx = ui->down_x;
+  int sy = ui->down_y;
+  ui->pointer_x = x;
+  ui->pointer_y = y;
+  ui->pointer_down = false;
+
+  /* 1. Check active popup buttons first if open */
+  if (ui->active_popup != LIVE_POPUP_NONE) {
+    if (ui_rect_contains(&ui->popup_btn_close, x, y) &&
+        ui_rect_contains(&ui->popup_btn_close, sx, sy)) {
+      ui->active_popup = LIVE_POPUP_NONE;
+      return;
+    }
+
+    if (ui->active_popup == LIVE_POPUP_EV) {
+      if (ui_rect_contains(&ui->popup_btn_minus, x, y) &&
+          ui_rect_contains(&ui->popup_btn_minus, sx, sy)) {
+        live_ui_step_ev(ui, camera, -1);
+        return;
+      }
+      if (ui_rect_contains(&ui->popup_btn_plus, x, y) &&
+          ui_rect_contains(&ui->popup_btn_plus, sx, sy)) {
+        live_ui_step_ev(ui, camera, 1);
+        return;
+      }
+      if (ui_rect_contains(&ui->popup_btn_reset, x, y) &&
+          ui_rect_contains(&ui->popup_btn_reset, sx, sy)) {
+        ui->ev_step_index = 0;
+        camera_stream_set_ev(camera, 0.0f);
+        printf("[-] 露出補正 (EV): +0.00 EV\n");
+        return;
+      }
+      static const int EV_QUICK_STEPS[5] = {-6, -3, 0, 3, 6};
+      for (int i = 0; i < ui->popup_opt_count; ++i) {
+        if (ui_rect_contains(&ui->popup_opt_rects[i], x, y) &&
+            ui_rect_contains(&ui->popup_opt_rects[i], sx, sy)) {
+          ui->ev_step_index = EV_QUICK_STEPS[i];
+          camera_stream_set_ev(camera, (float)ui->ev_step_index / 3.0f);
+          printf("[-] 露出補正 (EV): %+.2f EV\n",
+                 (float)ui->ev_step_index / 3.0f);
+          return;
+        }
+      }
+    } else if (ui->active_popup == LIVE_POPUP_TEMP) {
+      if (ui_rect_contains(&ui->popup_btn_minus, x, y) &&
+          ui_rect_contains(&ui->popup_btn_minus, sx, sy)) {
+        live_ui_set_kelvin(ui, camera, ui->wb_kelvin_value - 500);
+        return;
+      }
+      if (ui_rect_contains(&ui->popup_btn_plus, x, y) &&
+          ui_rect_contains(&ui->popup_btn_plus, sx, sy)) {
+        live_ui_set_kelvin(ui, camera, ui->wb_kelvin_value + 500);
+        return;
+      }
+      if (ui_rect_contains(&ui->popup_btn_reset, x, y) &&
+          ui_rect_contains(&ui->popup_btn_reset, sx, sy)) {
+        live_ui_set_kelvin(ui, camera, 5500);
+        return;
+      }
+      static const int K_QUICK[5] = {2800, 4000, 5500, 6500, 8000};
+      for (int i = 0; i < ui->popup_opt_count; ++i) {
+        if (ui_rect_contains(&ui->popup_opt_rects[i], x, y) &&
+            ui_rect_contains(&ui->popup_opt_rects[i], sx, sy)) {
+          live_ui_set_kelvin(ui, camera, K_QUICK[i]);
+          return;
+        }
+      }
+    } else {
+      for (int i = 0; i < ui->popup_opt_count; ++i) {
+        if (ui_rect_contains(&ui->popup_opt_rects[i], x, y) &&
+            ui_rect_contains(&ui->popup_opt_rects[i], sx, sy)) {
+          if (ui->active_popup == LIVE_POPUP_SS) {
+            live_ui_set_shutter_index(ui, camera, i);
+          } else if (ui->active_popup == LIVE_POPUP_ISO) {
+            live_ui_set_iso_index(ui, camera, i);
+          } else if (ui->active_popup == LIVE_POPUP_WB) {
+            live_ui_set_wb_index(ui, camera, i);
+          } else if (ui->active_popup == LIVE_POPUP_MET) {
+            live_ui_set_metering_index(ui, camera, i);
+          } else if (ui->active_popup == LIVE_POPUP_QUAL) {
+            live_ui_set_quality_index(ui, i);
+          }
+          return;
+        }
+      }
+    }
+
+    /* Absorb clicks inside the popup panel background */
+    if (ui_rect_contains(&ui->popup_panel_rect, x, y)) {
+      return;
+    }
+  }
+
+  /* 2. Top bar buttons */
+  if (ui_rect_contains(&ui->top_btn_play, x, y) &&
+      ui_rect_contains(&ui->top_btn_play, sx, sy)) {
+    ui->active_popup = LIVE_POPUP_NONE;
+    playback_manager_enter_playback(playback_mgr, renderer, NULL);
+    return;
+  }
+
+  if (ui_rect_contains(&ui->top_btn_af, x, y) &&
+      ui_rect_contains(&ui->top_btn_af, sx, sy)) {
+    live_ui_trigger_af_at(ui, camera, -1.0f, -1.0f);
+    return;
+  }
+
+  if (ui_rect_contains(&ui->top_btn_reset, x, y) &&
+      ui_rect_contains(&ui->top_btn_reset, sx, sy)) {
+    live_ui_reset_all(ui, camera);
+    return;
+  }
+
+  if (ui_rect_contains(&ui->top_btn_quit, x, y) &&
+      ui_rect_contains(&ui->top_btn_quit, sx, sy)) {
+    g_running = 0;
+    return;
+  }
+
+  /* 3. Right-edge Shutter Button */
+  if (ui_rect_contains(&ui->btn_shutter, x, y) &&
+      ui_rect_contains(&ui->btn_shutter, sx, sy)) {
+    ui->active_popup = LIVE_POPUP_NONE;
+    live_ui_request_shutter(camera, save_queue);
+    return;
+  }
+
+  /* 4. Bottom HUD parameter buttons */
+  if (ui_rect_contains(&ui->hud_btn_ss, x, y) &&
+      ui_rect_contains(&ui->hud_btn_ss, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_SS);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_iso, x, y) &&
+      ui_rect_contains(&ui->hud_btn_iso, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_ISO);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_ev, x, y) &&
+      ui_rect_contains(&ui->hud_btn_ev, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_EV);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_wb, x, y) &&
+      ui_rect_contains(&ui->hud_btn_wb, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_WB);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_temp, x, y) &&
+      ui_rect_contains(&ui->hud_btn_temp, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_TEMP);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_lock, x, y) &&
+      ui_rect_contains(&ui->hud_btn_lock, sx, sy)) {
+    ui->active_popup = LIVE_POPUP_NONE;
+    live_ui_toggle_awb_lock(ui, camera);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_met, x, y) &&
+      ui_rect_contains(&ui->hud_btn_met, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_MET);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_qual, x, y) &&
+      ui_rect_contains(&ui->hud_btn_qual, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_QUAL);
+    return;
+  }
+
+  /* 5. If popup was open and user tapped outside, close popup */
+  if (ui->active_popup != LIVE_POPUP_NONE) {
+    ui->active_popup = LIVE_POPUP_NONE;
+    return;
+  }
+
+  /* 6. Tapping inside the camera preview viewport triggers Touch AF */
+  if (ui_rect_contains(&ui->viewport_rect, x, y) && abs(x - sx) < 24 &&
+      abs(y - sy) < 24 && ui->viewport_rect.w > 0 && ui->viewport_rect.h > 0) {
+    float nx = (float)(x - ui->viewport_rect.x) / (float)ui->viewport_rect.w;
+    float ny = (float)(y - ui->viewport_rect.y) / (float)ui->viewport_rect.h;
+    live_ui_trigger_af_at(ui, camera, nx, ny);
+  }
+}
+
+static void handle_live_wheel_or_step(LiveUiController *ui,
+                                      CameraStream *camera, int dir, int px,
+                                      int py) {
+  if (dir == 0) {
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_ss, px, py) ||
+      ui->active_popup == LIVE_POPUP_SS) {
+    live_ui_set_shutter_index(ui, camera, ui->shutter_preset_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_iso, px, py) ||
+             ui->active_popup == LIVE_POPUP_ISO) {
+    live_ui_set_iso_index(ui, camera, ui->iso_preset_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_ev, px, py) ||
+             ui->active_popup == LIVE_POPUP_EV) {
+    live_ui_step_ev(ui, camera, dir);
+  } else if (ui_rect_contains(&ui->hud_btn_wb, px, py) ||
+             ui->active_popup == LIVE_POPUP_WB) {
+    live_ui_set_wb_index(ui, camera, ui->wb_preset_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_temp, px, py) ||
+             ui->active_popup == LIVE_POPUP_TEMP) {
+    live_ui_set_kelvin(ui, camera, ui->wb_kelvin_value + dir * 500);
+  } else if (ui_rect_contains(&ui->hud_btn_lock, px, py)) {
+    live_ui_toggle_awb_lock(ui, camera);
+  } else if (ui_rect_contains(&ui->hud_btn_met, px, py) ||
+             ui->active_popup == LIVE_POPUP_MET) {
+    live_ui_set_metering_index(ui, camera, ui->metering_preset_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_qual, px, py) ||
+             ui->active_popup == LIVE_POPUP_QUAL) {
+    live_ui_set_quality_index(ui, ui->quality_preset_index + dir);
+  } else {
+    /* Default wheel action on live viewfinder: adjust EV compensation */
+    live_ui_step_ev(ui, camera, dir);
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -364,16 +1324,15 @@ int main(int argc, char *argv[]) {
 
   const uint32_t target_frame_time_ms = 1000 / 30; // ~30 FPS
 
-  // Exposure, WB, Metering & JPEG quality control state indices
-  int ev_step_index = 0; // -9 (-3.0 EV) to +9 (+3.0 EV) in 1/3 EV increments
-  int iso_preset_index = 0;
-  int shutter_preset_index = 0;
-  int wb_preset_index = 0;
-  int wb_kelvin_value = 5500;
-  bool awb_locked = false;
-  int metering_preset_index = 0;
-  int quality_preset_index = 1; // Default: Fine (90%)
-  g_active_jpeg_quality = JPEG_QUALITY_PRESETS[quality_preset_index].quality;
+  // Live View UI & Exposure/WB/Metering/Quality controller state
+  LiveUiController live_ui;
+  memset(&live_ui, 0, sizeof(live_ui));
+  live_ui.wb_kelvin_value = 5500;
+  live_ui.quality_preset_index = 1; // Default: Fine (90%)
+  live_ui.pointer_x = -1;
+  live_ui.pointer_y = -1;
+  g_active_jpeg_quality =
+      JPEG_QUALITY_PRESETS[live_ui.quality_preset_index].quality;
 
   // Initialize background async JPEG + Exif save queue
   AsyncSaveQueue save_queue;
@@ -397,8 +1356,9 @@ int main(int argc, char *argv[]) {
   // 3. Main event & GPU rendering loop
   while (g_running) {
     uint32_t frame_start = SDL_GetTicks();
+    SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
 
-    // Process SDL events
+    // Process SDL events (Keyboard, Mouse, Mouse Wheel, and Touch Finger)
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       if (event.type == SDL_QUIT) {
@@ -418,211 +1378,217 @@ int main(int argc, char *argv[]) {
         bool shift_held = (event.key.keysym.mod & KMOD_SHIFT) != 0;
 
         switch (event.key.keysym.sym) {
+        case SDLK_ESCAPE:
+          if (live_ui.active_popup != LIVE_POPUP_NONE) {
+            live_ui.active_popup = LIVE_POPUP_NONE;
+          }
+          break;
+
         case SDLK_p:
-          // Switch to Playback / Gallery mode on 'P' key
+          live_ui.active_popup = LIVE_POPUP_NONE;
           playback_manager_enter_playback(&playback_mgr, renderer, NULL);
           break;
 
         case SDLK_f:
-          // Refocus on 'F' key (if AF supported)
-          if (camera_stream_is_af_supported(camera)) {
-            camera_stream_trigger_af(camera);
-          }
+          live_ui_trigger_af_at(&live_ui, camera, -1.0f, -1.0f);
           break;
 
         case SDLK_UP:
-        case SDLK_RIGHTBRACKET: {
-          if (ev_step_index < 9) {
-            ev_step_index++;
-            float ev = (float)ev_step_index / 3.0f;
-            camera_stream_set_ev(camera, ev);
-            printf("[-] 露出補正 (EV): %+.2f EV\n", ev);
-          }
+        case SDLK_RIGHTBRACKET:
+          live_ui_step_ev(&live_ui, camera, 1);
           break;
-        }
 
         case SDLK_DOWN:
-        case SDLK_LEFTBRACKET: {
-          if (ev_step_index > -9) {
-            ev_step_index--;
-            float ev = (float)ev_step_index / 3.0f;
-            camera_stream_set_ev(camera, ev);
-            printf("[-] 露出補正 (EV): %+.2f EV\n", ev);
-          }
+        case SDLK_LEFTBRACKET:
+          live_ui_step_ev(&live_ui, camera, -1);
           break;
-        }
 
-        case SDLK_i: {
-          if (shift_held) {
-            iso_preset_index =
-                (iso_preset_index - 1 + ISO_PRESET_COUNT) % ISO_PRESET_COUNT;
-          } else {
-            iso_preset_index = (iso_preset_index + 1) % ISO_PRESET_COUNT;
-          }
-          int iso = ISO_PRESETS[iso_preset_index];
-          camera_stream_set_iso(camera, iso);
-          if (iso == 0) {
-            printf("[-] ISO感度: Auto\n");
-          } else {
-            printf("[-] ISO感度: %d (手動)\n", iso);
-          }
+        case SDLK_i:
+          live_ui_set_iso_index(&live_ui, camera,
+                                live_ui.iso_preset_index +
+                                    (shift_held ? -1 : 1));
           break;
-        }
 
         case SDLK_s:
         case SDLK_RIGHT: {
-          if (event.key.keysym.sym == SDLK_s && shift_held) {
-            shutter_preset_index =
-                (shutter_preset_index - 1 + SHUTTER_PRESET_COUNT) %
-                SHUTTER_PRESET_COUNT;
-          } else {
-            shutter_preset_index =
-                (shutter_preset_index + 1) % SHUTTER_PRESET_COUNT;
-          }
-          int32_t shutter_us =
-              SHUTTER_PRESETS[shutter_preset_index].exposure_us;
-          camera_stream_set_shutter_speed(camera, shutter_us);
-          printf("[-] シャッタースピード: %s\n",
-                 SHUTTER_PRESETS[shutter_preset_index].label);
+          int step = (event.key.keysym.sym == SDLK_s && shift_held) ? -1 : 1;
+          live_ui_set_shutter_index(&live_ui, camera,
+                                    live_ui.shutter_preset_index + step);
           break;
         }
 
-        case SDLK_LEFT: {
-          shutter_preset_index =
-              (shutter_preset_index - 1 + SHUTTER_PRESET_COUNT) %
-              SHUTTER_PRESET_COUNT;
-          int32_t shutter_us =
-              SHUTTER_PRESETS[shutter_preset_index].exposure_us;
-          camera_stream_set_shutter_speed(camera, shutter_us);
-          printf("[-] シャッタースピード: %s\n",
-                 SHUTTER_PRESETS[shutter_preset_index].label);
+        case SDLK_LEFT:
+          live_ui_set_shutter_index(&live_ui, camera,
+                                    live_ui.shutter_preset_index - 1);
           break;
-        }
 
-        case SDLK_w: {
-          if (shift_held) {
-            wb_preset_index =
-                (wb_preset_index - 1 + WB_PRESET_COUNT) % WB_PRESET_COUNT;
-          } else {
-            wb_preset_index = (wb_preset_index + 1) % WB_PRESET_COUNT;
-          }
-          awb_locked = false;
-          CameraWbMode wb_mode = WB_PRESETS[wb_preset_index].mode;
-          if (wb_mode == CAMERA_WB_MODE_KELVIN) {
-            camera_stream_set_wb_kelvin(camera, wb_kelvin_value);
-            printf("[-] ホワイトバランス: %s (%dK)\n",
-                   WB_PRESETS[wb_preset_index].name, wb_kelvin_value);
-          } else {
-            camera_stream_set_wb_mode(camera, wb_mode);
-            printf("[-] ホワイトバランス: %s\n",
-                   WB_PRESETS[wb_preset_index].name);
-          }
+        case SDLK_w:
+          live_ui_set_wb_index(&live_ui, camera,
+                               live_ui.wb_preset_index + (shift_held ? -1 : 1));
           break;
-        }
 
-        case SDLK_k: {
-          if (shift_held) {
-            wb_kelvin_value -= 500;
-            if (wb_kelvin_value < 2500) {
-              wb_kelvin_value = 2500;
-            }
-          } else {
-            wb_kelvin_value += 500;
-            if (wb_kelvin_value > 10000) {
-              wb_kelvin_value = 10000;
-            }
-          }
-          wb_preset_index = WB_PRESET_COUNT - 1; /* CAMERA_WB_MODE_KELVIN */
-          awb_locked = false;
-          camera_stream_set_wb_kelvin(camera, wb_kelvin_value);
-          printf("[-] 色温度手動指定 (WB Kelvin): %dK\n", wb_kelvin_value);
+        case SDLK_k:
+          live_ui_set_kelvin(&live_ui, camera,
+                             live_ui.wb_kelvin_value +
+                                 (shift_held ? -500 : 500));
           break;
-        }
 
-        case SDLK_l: {
-          awb_locked = !awb_locked;
-          camera_stream_set_awb_lock(camera, awb_locked);
-          printf("[-] AWBロック: %s\n",
-                 awb_locked ? "ON (現在の色合いで固定)" : "OFF (解除)");
+        case SDLK_l:
+          live_ui_toggle_awb_lock(&live_ui, camera);
           break;
-        }
 
-        case SDLK_m: {
-          if (shift_held) {
-            metering_preset_index =
-                (metering_preset_index - 1 + METERING_PRESET_COUNT) %
-                METERING_PRESET_COUNT;
-          } else {
-            metering_preset_index =
-                (metering_preset_index + 1) % METERING_PRESET_COUNT;
-          }
-          CameraMeteringMode met_mode =
-              METERING_PRESETS[metering_preset_index].mode;
-          camera_stream_set_metering_mode(camera, met_mode);
-          printf("[-] 測光モード: %s\n",
-                 METERING_PRESETS[metering_preset_index].name);
+        case SDLK_m:
+          live_ui_set_metering_index(&live_ui, camera,
+                                     live_ui.metering_preset_index +
+                                         (shift_held ? -1 : 1));
           break;
-        }
 
-        case SDLK_j: {
-          if (shift_held) {
-            quality_preset_index =
-                (quality_preset_index - 1 + JPEG_QUALITY_PRESET_COUNT) %
-                JPEG_QUALITY_PRESET_COUNT;
-          } else {
-            quality_preset_index =
-                (quality_preset_index + 1) % JPEG_QUALITY_PRESET_COUNT;
-          }
-          g_active_jpeg_quality =
-              JPEG_QUALITY_PRESETS[quality_preset_index].quality;
-          printf("[-] JPEG保存画質: %s\n",
-                 JPEG_QUALITY_PRESETS[quality_preset_index].name);
+        case SDLK_j:
+          live_ui_set_quality_index(&live_ui, live_ui.quality_preset_index +
+                                                  (shift_held ? -1 : 1));
           break;
-        }
 
-        case SDLK_r: {
-          ev_step_index = 0;
-          iso_preset_index = 0;
-          shutter_preset_index = 0;
-          wb_preset_index = 0;
-          wb_kelvin_value = 5500;
-          awb_locked = false;
-          metering_preset_index = 0;
-          quality_preset_index = 1;
-          g_active_jpeg_quality =
-              JPEG_QUALITY_PRESETS[quality_preset_index].quality;
-          camera_stream_set_ev(camera, 0.0f);
-          camera_stream_set_iso(camera, 0);
-          camera_stream_set_shutter_speed(camera, 0);
-          camera_stream_set_wb_mode(camera, CAMERA_WB_MODE_AUTO);
-          camera_stream_set_awb_lock(camera, false);
-          camera_stream_set_metering_mode(camera, CAMERA_METERING_MATRIX);
-          printf(
-              "[-] 露出・WB・測光・画質設定をリセットしました (EV: 0.0, ISO: "
-              "Auto, SS: Auto, WB: Auto, Met: Matrix, JPG: %s)\n",
-              JPEG_QUALITY_PRESETS[quality_preset_index].name);
+        case SDLK_r:
+          live_ui_reset_all(&live_ui, camera);
           break;
-        }
 
-        case SDLK_SPACE: {
-          // Request asynchronous high-resolution still capture on 'Space' key
-          if (camera_stream_is_still_pending(camera)) {
-            printf("[-] 撮影処理中です...\n");
-          } else if (async_save_queue_get_pending_count(&save_queue) >=
-                     ASYNC_SAVE_QUEUE_CAPACITY) {
-            fprintf(stderr,
-                    "[警告] "
-                    "保存キューが満杯です。書き込み完了をお待ちください。\n");
-          } else {
-            camera_stream_request_still(camera);
-          }
+        case SDLK_SPACE:
+          live_ui.active_popup = LIVE_POPUP_NONE;
+          live_ui_request_shutter(camera, &save_queue);
           break;
-        }
 
         default:
           break;
         }
+      } else if (event.type == SDL_MOUSEBUTTONDOWN) {
+        if (event.button.which == SDL_TOUCH_MOUSEID) {
+          continue; /* Handled via SDL_FINGERDOWN to avoid duplicate events */
+        }
+        if (!live_ui.cursor_visible) {
+          SDL_ShowCursor(SDL_ENABLE);
+          live_ui.cursor_visible = true;
+        }
+        live_ui.last_mouse_move_ms = frame_start;
+        int mx = event.button.x;
+        int my = event.button.y;
+
+        if (event.button.button == SDL_BUTTON_LEFT) {
+          if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+            playback_manager_handle_pointer_down(&playback_mgr, renderer, mx,
+                                                 my);
+          } else {
+            live_ui.pointer_x = mx;
+            live_ui.pointer_y = my;
+            live_ui.pointer_down = true;
+            live_ui.down_x = mx;
+            live_ui.down_y = my;
+          }
+        } else if (event.button.button == SDL_BUTTON_RIGHT) {
+          /* Right click steps backward on hovered Live HUD button or exits zoom
+           */
+          if (playback_manager_get_mode(&playback_mgr) == APP_MODE_LIVE) {
+            handle_live_wheel_or_step(&live_ui, camera, -1, mx, my);
+          }
+        }
+      } else if (event.type == SDL_MOUSEMOTION) {
+        if (event.motion.which == SDL_TOUCH_MOUSEID) {
+          continue;
+        }
+        if (!live_ui.cursor_visible) {
+          SDL_ShowCursor(SDL_ENABLE);
+          live_ui.cursor_visible = true;
+        }
+        live_ui.last_mouse_move_ms = frame_start;
+        int mx = event.motion.x;
+        int my = event.motion.y;
+        live_ui.pointer_x = mx;
+        live_ui.pointer_y = my;
+        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+          playback_manager_handle_pointer_move(&playback_mgr, renderer, mx, my);
+        }
+      } else if (event.type == SDL_MOUSEBUTTONUP) {
+        if (event.button.which == SDL_TOUCH_MOUSEID) {
+          continue;
+        }
+        live_ui.last_mouse_move_ms = frame_start;
+        if (event.button.button == SDL_BUTTON_LEFT) {
+          int mx = event.button.x;
+          int my = event.button.y;
+          if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+            playback_manager_handle_pointer_up(&playback_mgr, renderer, mx, my);
+          } else {
+            handle_live_pointer_up(&live_ui, camera, &playback_mgr, &save_queue,
+                                   renderer, mx, my);
+          }
+        }
+      } else if (event.type == SDL_MOUSEWHEEL) {
+        if (event.wheel.which == SDL_TOUCH_MOUSEID || event.wheel.y == 0) {
+          continue;
+        }
+        if (!live_ui.cursor_visible) {
+          SDL_ShowCursor(SDL_ENABLE);
+          live_ui.cursor_visible = true;
+        }
+        live_ui.last_mouse_move_ms = frame_start;
+        int wy = event.wheel.y;
+        if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+          wy = -wy;
+        }
+        int mx = live_ui.pointer_x >= 0 ? live_ui.pointer_x : (cur_win_w / 2);
+        int my = live_ui.pointer_y >= 0 ? live_ui.pointer_y : (cur_win_h / 2);
+        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+          playback_manager_handle_wheel(&playback_mgr, renderer, wy, mx, my);
+        } else {
+          handle_live_wheel_or_step(&live_ui, camera, wy > 0 ? 1 : -1, mx, my);
+        }
+      } else if (event.type == SDL_FINGERDOWN) {
+        if (live_ui.cursor_visible) {
+          SDL_ShowCursor(SDL_DISABLE);
+          live_ui.cursor_visible = false;
+        }
+        int tx = (int)(event.tfinger.x * (float)cur_win_w);
+        int ty = (int)(event.tfinger.y * (float)cur_win_h);
+        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+          playback_manager_handle_pointer_down(&playback_mgr, renderer, tx, ty);
+        } else {
+          live_ui.pointer_x = tx;
+          live_ui.pointer_y = ty;
+          live_ui.pointer_down = true;
+          live_ui.down_x = tx;
+          live_ui.down_y = ty;
+        }
+      } else if (event.type == SDL_FINGERMOTION) {
+        int tx = (int)(event.tfinger.x * (float)cur_win_w);
+        int ty = (int)(event.tfinger.y * (float)cur_win_h);
+        live_ui.pointer_x = tx;
+        live_ui.pointer_y = ty;
+        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+          playback_manager_handle_pointer_move(&playback_mgr, renderer, tx, ty);
+        }
+      } else if (event.type == SDL_FINGERUP) {
+        int tx = (int)(event.tfinger.x * (float)cur_win_w);
+        int ty = (int)(event.tfinger.y * (float)cur_win_h);
+        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
+          playback_manager_handle_pointer_up(&playback_mgr, renderer, tx, ty);
+        } else {
+          handle_live_pointer_up(&live_ui, camera, &playback_mgr, &save_queue,
+                                 renderer, tx, ty);
+        }
+        /* Clear hover state after touch release so touch buttons don't stay
+         * hovered */
+        live_ui.pointer_x = -1;
+        live_ui.pointer_y = -1;
+        playback_mgr.pointer_x = -1;
+        playback_mgr.pointer_y = -1;
       }
+    }
+
+    /* Auto-hide mouse cursor after 3 seconds of inactivity */
+    if (live_ui.cursor_visible && !live_ui.pointer_down &&
+        !playback_mgr.pointer_down &&
+        SDL_TICKS_PASSED(frame_start, live_ui.last_mouse_move_ms + 3000U)) {
+      SDL_ShowCursor(SDL_DISABLE);
+      live_ui.cursor_visible = false;
     }
 
     // Poll completed asynchronous still capture and dispatch to Quick Review +
@@ -645,7 +1611,7 @@ int main(int argc, char *argv[]) {
                            &captured_still.exp_status);
 
         // 3. Enqueue for background JPEG encoding & SD card write
-        int jpeg_q = JPEG_QUALITY_PRESETS[quality_preset_index].quality;
+        int jpeg_q = JPEG_QUALITY_PRESETS[live_ui.quality_preset_index].quality;
         if (!async_save_queue_push(&save_queue, filepath, captured_still.data,
                                    captured_still.size, captured_still.width,
                                    captured_still.height, captured_still.stride,
@@ -664,13 +1630,7 @@ int main(int argc, char *argv[]) {
     // Update playback/quick-review timers
     playback_manager_update(&playback_mgr, renderer);
 
-    SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
-
     if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-      // Drain incoming camera frames in background so buffer sequence stays
-      // fresh
-      camera_stream_get_latest_frame(camera, frame_buffer, frame_size,
-                                     &frame_seq);
       playback_manager_render(&playback_mgr, renderer, cur_win_w, cur_win_h);
     } else {
       // 4. Retrieve latest camera frame and update GPU texture
@@ -685,28 +1645,32 @@ int main(int argc, char *argv[]) {
       }
 
       // 5. Render camera frame with aspect-ratio preserving viewport
-      SDL_Rect viewport_rect;
       calculate_viewport_rect(cam_width, cam_height, cur_win_w, cur_win_h,
-                              &viewport_rect);
+                              &live_ui.viewport_rect);
 
-      SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-      SDL_RenderClear(renderer);
+                              SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                              SDL_RenderClear(renderer);
 
-      SDL_RenderCopy(renderer, camera_texture, NULL, &viewport_rect);
+                              SDL_RenderCopy(renderer, camera_texture, NULL,
+                                             &live_ui.viewport_rect);
 
-      // 6. Draw overlay guide text & exposure HUD via SDL2_ttf
-      text_renderer_draw_guide(renderer, camera_stream_is_af_supported(camera));
+                              // 6. Draw interactive touch/mouse Live UI, HUD
+                              // buttons, and popups
+                              CameraExposureStatus exp_status;
+                              camera_stream_get_exposure_status(camera,
+                                                                &exp_status);
+                              int pending_saves =
+                                  async_save_queue_get_pending_count(
+                                      &save_queue) +
+                                  (camera_stream_is_still_pending(camera) ? 1
+                                                                          : 0);
+                              render_live_ui(renderer, &live_ui, camera,
+                                             &exp_status, pending_saves,
+                                             cur_win_w, cur_win_h);
 
-      CameraExposureStatus exp_status;
-      camera_stream_get_exposure_status(camera, &exp_status);
-      int pending_saves = async_save_queue_get_pending_count(&save_queue) +
-                          (camera_stream_is_still_pending(camera) ? 1 : 0);
-      text_renderer_draw_exposure_hud(
-          renderer, cur_win_w, cur_win_h, &exp_status,
-          JPEG_QUALITY_PRESETS[quality_preset_index].hud_label, pending_saves);
-
-      playback_manager_render_toast(&playback_mgr, renderer, cur_win_w,
-                                    cur_win_h);
+                              playback_manager_render_toast(&playback_mgr,
+                                                            renderer, cur_win_w,
+                                                            cur_win_h);
     }
 
     // 7. Present frame to physical display
@@ -720,13 +1684,12 @@ int main(int argc, char *argv[]) {
   }
 
   // 9. Cleanup resources
-  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-              "%s: %d: 終了処理を実行中...",
+  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: 終了処理を実行中...",
               __FILE__, __LINE__);
   if (async_save_queue_get_pending_count(&save_queue) > 0) {
-	SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "%s: %d: バックグラウンド保存キューの完了を待機中...",
-                __FILE__, __LINE__);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "%s: %d: バックグラウンド保存キューの完了を待機中...", __FILE__,
+                __LINE__);
     async_save_queue_wait_idle(&save_queue);
   }
   async_save_queue_destroy(&save_queue);
@@ -751,8 +1714,7 @@ int main(int argc, char *argv[]) {
   }
 
   SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-              "%s: %d: アプリケーションを終了します。",
-              __FILE__, __LINE__);
+              "%s: %d: アプリケーションを終了します。", __FILE__, __LINE__);
 
   exit(0);
   return 0;
