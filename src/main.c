@@ -462,6 +462,26 @@ static void render_af_reticle(SDL_Renderer *renderer, LiveUiController *ui,
   SDL_RenderDrawLine(renderer, cx, cy - 8, cx, cy + 8);
 }
 
+typedef struct {
+  char label[48];
+  int min_w;
+  UiButtonStyle style;
+  SDL_Rect *target_rect;
+  bool force_new_row;
+  int rel_x;
+  int rel_y;
+} PopupBtnItem;
+
+static int calc_button_width(const char *text, int min_w) {
+  int tw = 0;
+  int th = 0;
+  if (!text_renderer_measure_text(text, &tw, &th)) {
+    tw = (int)strlen(text) * 9;
+  }
+  int w = tw + 24; /* matches pad_x = 12 * 2 in text_renderer_draw_button */
+  return (min_w > w) ? min_w : w;
+}
+
 static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
                               int win_w, int win_h) {
   ui->popup_panel_rect = (SDL_Rect){0, 0, 0, 0};
@@ -475,64 +495,258 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     return;
   }
 
-  /* Determine right edge of the left vertical settings column */
-  int left_col_right = ui->hud_btn_ss.x + ui->hud_btn_ss.w;
-  if (ui->hud_btn_iso.x + ui->hud_btn_iso.w > left_col_right) {
-    left_col_right = ui->hud_btn_iso.x + ui->hud_btn_iso.w;
-  }
-  if (left_col_right < 152) {
-    left_col_right = 152;
+  /* Determine right edge of the left vertical settings column across all 8 buttons */
+  const SDL_Rect *left_btns[8] = {
+      &ui->hud_btn_ss,   &ui->hud_btn_iso,  &ui->hud_btn_ev,
+      &ui->hud_btn_wb,   &ui->hud_btn_temp, &ui->hud_btn_lock,
+      &ui->hud_btn_met,  &ui->hud_btn_qual,
+  };
+  int left_col_right = 152;
+  for (int i = 0; i < 8; ++i) {
+    int r_edge = left_btns[i]->x + left_btns[i]->w;
+    if (r_edge > left_col_right) {
+      left_col_right = r_edge;
+    }
   }
 
   int panel_x = left_col_right + 10;
-  int right_limit = (ui->btn_shutter.x > 0 ? ui->btn_shutter.x : (win_w - 110)) - 10;
-  int panel_w = right_limit - panel_x;
-  if (panel_w > 740) {
-    panel_w = 740;
+  int right_limit =
+      (ui->btn_shutter.x > 0 ? ui->btn_shutter.x : (win_w - 110)) - 10;
+  int max_panel_w = right_limit - panel_x;
+  if (max_panel_w > 740) {
+    max_panel_w = 740;
   }
-  if (panel_w < 360) {
-    panel_w = 360;
+  if (max_panel_w < 300) {
+    max_panel_w = 300;
   }
 
-  bool two_rows = (ui->active_popup == LIVE_POPUP_SS ||
-                   ui->active_popup == LIVE_POPUP_EV ||
-                   ui->active_popup == LIVE_POPUP_TEMP);
-  int panel_h = two_rows ? 148 : 106;
-
-  /* Align popup vertically near the active left-column button */
-  int anchor_y = 58;
+  const char *title = "";
+  int anchor_y = 56;
   switch (ui->active_popup) {
   case LIVE_POPUP_SS:
+    title = "Shutter Speed [S / Left / Right]";
     anchor_y = ui->hud_btn_ss.y;
     break;
   case LIVE_POPUP_ISO:
+    title = "ISO Sensitivity [I]";
     anchor_y = ui->hud_btn_iso.y;
     break;
   case LIVE_POPUP_EV:
+    title = "Exposure Compensation (EV) [Up / Down]";
     anchor_y = ui->hud_btn_ev.y;
     break;
   case LIVE_POPUP_WB:
+    title = "White Balance Mode [W]";
     anchor_y = ui->hud_btn_wb.y;
     break;
   case LIVE_POPUP_TEMP:
+    title = "Color Temperature (Kelvin) [K]";
     anchor_y = ui->hud_btn_temp.y;
     break;
   case LIVE_POPUP_MET:
+    title = "AE Metering Mode [M]";
     anchor_y = ui->hud_btn_met.y;
     break;
   case LIVE_POPUP_QUAL:
+    title = "JPEG Quality [J]";
     anchor_y = ui->hud_btn_qual.y;
     break;
   default:
     break;
   }
 
-  int panel_y = anchor_y;
-  if (panel_y + panel_h > win_h - 12) {
-    panel_y = win_h - panel_h - 12;
+  /* Build list of buttons for the active popup */
+  PopupBtnItem items[20];
+  int item_count = 0;
+
+  if (ui->active_popup == LIVE_POPUP_ISO) {
+    ui->popup_opt_count = ISO_PRESET_COUNT;
+    for (int i = 0; i < ISO_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      if (ISO_PRESETS[i] == 0) {
+        snprintf(it->label, sizeof(it->label), "Auto");
+      } else {
+        snprintf(it->label, sizeof(it->label), "ISO %d", ISO_PRESETS[i]);
+      }
+      it->min_w = 86;
+      it->style = (ui->iso_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                              : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_WB) {
+    ui->popup_opt_count = WB_PRESET_COUNT;
+    for (int i = 0; i < WB_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s", WB_PRESETS[i].ui_label);
+      it->min_w = 90;
+      it->style = (ui->wb_preset_index == i && !ui->awb_locked)
+                      ? UI_BTN_STYLE_ACTIVE
+                      : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_MET) {
+    ui->popup_opt_count = METERING_PRESET_COUNT;
+    for (int i = 0; i < METERING_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s",
+               METERING_PRESETS[i].ui_label);
+      it->min_w = 116;
+      it->style = (ui->metering_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                                   : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_QUAL) {
+    ui->popup_opt_count = JPEG_QUALITY_PRESET_COUNT;
+    for (int i = 0; i < JPEG_QUALITY_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s",
+               JPEG_QUALITY_PRESETS[i].name);
+      it->min_w = 136;
+      it->style = (ui->quality_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                                  : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_EV) {
+    PopupBtnItem *it_minus = &items[item_count++];
+    snprintf(it_minus->label, sizeof(it_minus->label), "- 1/3 EV");
+    it_minus->min_w = 96;
+    it_minus->style = UI_BTN_STYLE_DEFAULT;
+    it_minus->target_rect = &ui->popup_btn_minus;
+    it_minus->force_new_row = false;
+
+    PopupBtnItem *it_reset = &items[item_count++];
+    snprintf(it_reset->label, sizeof(it_reset->label),
+             "Reset 0.0 (Now: %+.1f)", (float)ui->ev_step_index / 3.0f);
+    it_reset->min_w = 172;
+    it_reset->style =
+        ui->ev_step_index == 0 ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DEFAULT;
+    it_reset->target_rect = &ui->popup_btn_reset;
+    it_reset->force_new_row = false;
+
+    PopupBtnItem *it_plus = &items[item_count++];
+    snprintf(it_plus->label, sizeof(it_plus->label), "+ 1/3 EV");
+    it_plus->min_w = 96;
+    it_plus->style = UI_BTN_STYLE_DEFAULT;
+    it_plus->target_rect = &ui->popup_btn_plus;
+    it_plus->force_new_row = false;
+
+    static const int EV_QUICK_STEPS[5] = {-6, -3, 0, 3, 6};
+    ui->popup_opt_count = 5;
+    for (int i = 0; i < 5; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%+d.0 EV",
+               EV_QUICK_STEPS[i] / 3);
+      it->min_w = 76;
+      it->style = (ui->ev_step_index == EV_QUICK_STEPS[i])
+                      ? UI_BTN_STYLE_ACTIVE
+                      : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = (i == 0);
+    }
+  } else if (ui->active_popup == LIVE_POPUP_TEMP) {
+    PopupBtnItem *it_minus = &items[item_count++];
+    snprintf(it_minus->label, sizeof(it_minus->label), "- 500K");
+    it_minus->min_w = 92;
+    it_minus->style = UI_BTN_STYLE_DEFAULT;
+    it_minus->target_rect = &ui->popup_btn_minus;
+    it_minus->force_new_row = false;
+
+    PopupBtnItem *it_reset = &items[item_count++];
+    snprintf(it_reset->label, sizeof(it_reset->label), "5500K (Now: %dK)",
+             ui->wb_kelvin_value);
+    it_reset->min_w = 168;
+    it_reset->style = ui->wb_kelvin_value == 5500 ? UI_BTN_STYLE_ACTIVE
+                                                  : UI_BTN_STYLE_DEFAULT;
+    it_reset->target_rect = &ui->popup_btn_reset;
+    it_reset->force_new_row = false;
+
+    PopupBtnItem *it_plus = &items[item_count++];
+    snprintf(it_plus->label, sizeof(it_plus->label), "+ 500K");
+    it_plus->min_w = 92;
+    it_plus->style = UI_BTN_STYLE_DEFAULT;
+    it_plus->target_rect = &ui->popup_btn_plus;
+    it_plus->force_new_row = false;
+
+    static const int K_QUICK[5] = {2800, 4000, 5500, 6500, 8000};
+    ui->popup_opt_count = 5;
+    for (int i = 0; i < 5; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%dK", K_QUICK[i]);
+      it->min_w = 76;
+      it->style =
+          (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN &&
+           ui->wb_kelvin_value == K_QUICK[i])
+              ? UI_BTN_STYLE_ACTIVE
+              : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = (i == 0);
+    }
+  } else if (ui->active_popup == LIVE_POPUP_SS) {
+    ui->popup_opt_count = SHUTTER_PRESET_COUNT;
+    for (int i = 0; i < SHUTTER_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s", SHUTTER_PRESETS[i].label);
+      it->min_w = 88;
+      it->style = (ui->shutter_preset_index == i) ? UI_BTN_STYLE_ACTIVE
+                                                  : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
   }
-  if (panel_y < 56) {
-    panel_y = 56;
+
+  /* Pass 1: Compute wrapped relative button positions within max_panel_w */
+  const int pad_x = 12;
+  const int header_h = 44;
+  const int gap_x = 6;
+  const int gap_y = 6;
+  const int btn_h = 38;
+
+  int cur_x = pad_x;
+  int cur_y = header_h;
+  int max_right_x = pad_x;
+
+  for (int i = 0; i < item_count; ++i) {
+    int bw = calc_button_width(items[i].label, items[i].min_w);
+    if (items[i].force_new_row ||
+        (cur_x > pad_x && cur_x + bw > max_panel_w - pad_x)) {
+      cur_x = pad_x;
+      cur_y += btn_h + gap_y;
+    }
+    items[i].rel_x = cur_x;
+    items[i].rel_y = cur_y;
+    if (cur_x + bw > max_right_x) {
+      max_right_x = cur_x + bw;
+    }
+    cur_x += bw + gap_x;
+  }
+
+  int title_w = 0;
+  int title_h = 0;
+  if (!text_renderer_measure_text(title, &title_w, &title_h)) {
+    title_w = (int)strlen(title) * 9;
+  }
+  int close_w = calc_button_width("Close [X]", 86);
+  int min_header_w = pad_x + title_w + 16 + close_w + pad_x;
+
+  int panel_w = max_right_x + pad_x;
+  if (panel_w < min_header_w) {
+    panel_w = min_header_w;
+  }
+  if (panel_w > max_panel_w) {
+    panel_w = max_panel_w;
+  }
+
+  int panel_h = cur_y + btn_h + 12;
+  int panel_y = anchor_y;
+  if (panel_y + panel_h > win_h - 10) {
+    panel_y = win_h - panel_h - 10;
+  }
+  if (panel_y < 54) {
+    panel_y = 54;
   }
 
   SDL_Rect panel = {panel_x, panel_y, panel_w, panel_h};
@@ -542,202 +756,25 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
   SDL_Color bd = {100, 210, 255, 220};
   text_renderer_draw_panel(renderer, &panel, bg, bd);
 
-  const char *title = "";
-  switch (ui->active_popup) {
-  case LIVE_POPUP_SS:
-    title = "Shutter Speed [S / Left / Right]";
-    break;
-  case LIVE_POPUP_ISO:
-    title = "ISO Sensitivity [I]";
-    break;
-  case LIVE_POPUP_EV:
-    title = "Exposure Compensation (EV) [Up / Down]";
-    break;
-  case LIVE_POPUP_WB:
-    title = "White Balance Mode [W]";
-    break;
-  case LIVE_POPUP_TEMP:
-    title = "Color Temperature (Kelvin) [K]";
-    break;
-  case LIVE_POPUP_MET:
-    title = "AE Metering Mode [M]";
-    break;
-  case LIVE_POPUP_QUAL:
-    title = "JPEG Quality [J]";
-    break;
-  default:
-    break;
-  }
-
   SDL_Color cyan = {130, 225, 255, 255};
-  text_renderer_draw_text(renderer, title, panel.x + 14, panel.y + 10, cyan,
+  text_renderer_draw_text(renderer, title, panel.x + pad_x, panel.y + 10, cyan,
                           NULL, NULL);
 
   text_renderer_draw_button(
-      renderer, "Close [X]", panel.x + panel.w - 102, panel.y + 6, 90, 32,
-      UI_BTN_STYLE_DEFAULT, live_btn_hovered(ui, &ui->popup_btn_close),
+      renderer, "Close [X]", panel.x + panel.w - close_w - pad_x, panel.y + 6,
+      86, 32, UI_BTN_STYLE_DEFAULT, live_btn_hovered(ui, &ui->popup_btn_close),
       live_btn_pressed(ui, &ui->popup_btn_close), &ui->popup_btn_close);
 
-  int start_x = panel.x + 14;
-  int row_x = start_x;
-  int row_y = panel.y + 44;
-  int gap = 8;
-  int btn_h = 42;
-  SDL_Rect r;
-
-  if (ui->active_popup == LIVE_POPUP_ISO) {
-    ui->popup_opt_count = ISO_PRESET_COUNT;
-    for (int i = 0; i < ISO_PRESET_COUNT; ++i) {
-      char lbl[32];
-      if (ISO_PRESETS[i] == 0) {
-        snprintf(lbl, sizeof(lbl), "Auto");
-      } else {
-        snprintf(lbl, sizeof(lbl), "ISO %d", ISO_PRESETS[i]);
-      }
-      UiButtonStyle st = (ui->iso_preset_index == i) ? UI_BTN_STYLE_ACTIVE
-                                                     : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(renderer, lbl, row_x, row_y, 86, btn_h, st,
-                                live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-                                live_btn_pressed(ui, &ui->popup_opt_rects[i]),
-                                &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
-    }
-  } else if (ui->active_popup == LIVE_POPUP_WB) {
-    ui->popup_opt_count = WB_PRESET_COUNT;
-    for (int i = 0; i < WB_PRESET_COUNT; ++i) {
-      UiButtonStyle st = (ui->wb_preset_index == i && !ui->awb_locked)
-                             ? UI_BTN_STYLE_ACTIVE
-                             : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(
-          renderer, WB_PRESETS[i].ui_label, row_x, row_y, 90, btn_h, st,
-          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
-    }
-  } else if (ui->active_popup == LIVE_POPUP_MET) {
-    ui->popup_opt_count = METERING_PRESET_COUNT;
-    for (int i = 0; i < METERING_PRESET_COUNT; ++i) {
-      UiButtonStyle st = (ui->metering_preset_index == i)
-                             ? UI_BTN_STYLE_ACTIVE
-                             : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(
-          renderer, METERING_PRESETS[i].ui_label, row_x, row_y, 130, btn_h, st,
-          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
-    }
-  } else if (ui->active_popup == LIVE_POPUP_QUAL) {
-    ui->popup_opt_count = JPEG_QUALITY_PRESET_COUNT;
-    for (int i = 0; i < JPEG_QUALITY_PRESET_COUNT; ++i) {
-      UiButtonStyle st = (ui->quality_preset_index == i) ? UI_BTN_STYLE_ACTIVE
-                                                         : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(
-          renderer, JPEG_QUALITY_PRESETS[i].name, row_x, row_y, 160, btn_h, st,
-          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
-    }
-  } else if (ui->active_popup == LIVE_POPUP_EV) {
+  /* Pass 2: Draw all buttons inside the fitted panel */
+  for (int i = 0; i < item_count; ++i) {
+    SDL_Rect r;
     text_renderer_draw_button(
-        renderer, "- 1/3 EV", row_x, row_y, 108, btn_h, UI_BTN_STYLE_DEFAULT,
-        live_btn_hovered(ui, &ui->popup_btn_minus),
-        live_btn_pressed(ui, &ui->popup_btn_minus), &ui->popup_btn_minus);
-    row_x += ui->popup_btn_minus.w + gap;
-
-    char cur_ev[32];
-    snprintf(cur_ev, sizeof(cur_ev), "Reset 0.0 (Now: %+.1f)",
-             (float)ui->ev_step_index / 3.0f);
-    text_renderer_draw_button(
-        renderer, cur_ev, row_x, row_y, 184, btn_h,
-        ui->ev_step_index == 0 ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DEFAULT,
-        live_btn_hovered(ui, &ui->popup_btn_reset),
-        live_btn_pressed(ui, &ui->popup_btn_reset), &ui->popup_btn_reset);
-    row_x += ui->popup_btn_reset.w + gap;
-
-    text_renderer_draw_button(
-        renderer, "+ 1/3 EV", row_x, row_y, 108, btn_h, UI_BTN_STYLE_DEFAULT,
-        live_btn_hovered(ui, &ui->popup_btn_plus),
-        live_btn_pressed(ui, &ui->popup_btn_plus), &ui->popup_btn_plus);
-
-    row_x = start_x;
-    row_y += btn_h + 6;
-
-    static const int EV_QUICK_STEPS[5] = {-6, -3, 0, 3, 6};
-    ui->popup_opt_count = 5;
-    for (int i = 0; i < 5; ++i) {
-      char lbl[24];
-      snprintf(lbl, sizeof(lbl), "%+d.0 EV", EV_QUICK_STEPS[i] / 3);
-      UiButtonStyle st = (ui->ev_step_index == EV_QUICK_STEPS[i])
-                             ? UI_BTN_STYLE_ACTIVE
-                             : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(renderer, lbl, row_x, row_y, 80, btn_h, st,
-                                live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-                                live_btn_pressed(ui, &ui->popup_opt_rects[i]),
-                                &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
-    }
-  } else if (ui->active_popup == LIVE_POPUP_TEMP) {
-    text_renderer_draw_button(
-        renderer, "- 500K", row_x, row_y, 100, btn_h, UI_BTN_STYLE_DEFAULT,
-        live_btn_hovered(ui, &ui->popup_btn_minus),
-        live_btn_pressed(ui, &ui->popup_btn_minus), &ui->popup_btn_minus);
-    row_x += ui->popup_btn_minus.w + gap;
-
-    char cur_k[32];
-    snprintf(cur_k, sizeof(cur_k), "5500K (Now: %dK)", ui->wb_kelvin_value);
-    text_renderer_draw_button(
-        renderer, cur_k, row_x, row_y, 176, btn_h,
-        ui->wb_kelvin_value == 5500 ? UI_BTN_STYLE_ACTIVE
-                                    : UI_BTN_STYLE_DEFAULT,
-        live_btn_hovered(ui, &ui->popup_btn_reset),
-        live_btn_pressed(ui, &ui->popup_btn_reset), &ui->popup_btn_reset);
-    row_x += ui->popup_btn_reset.w + gap;
-
-    text_renderer_draw_button(
-        renderer, "+ 500K", row_x, row_y, 100, btn_h, UI_BTN_STYLE_DEFAULT,
-        live_btn_hovered(ui, &ui->popup_btn_plus),
-        live_btn_pressed(ui, &ui->popup_btn_plus), &ui->popup_btn_plus);
-
-    row_x = start_x;
-    row_y += btn_h + 6;
-
-    static const int K_QUICK[5] = {2800, 4000, 5500, 6500, 8000};
-    ui->popup_opt_count = 5;
-    for (int i = 0; i < 5; ++i) {
-      char lbl[24];
-      snprintf(lbl, sizeof(lbl), "%dK", K_QUICK[i]);
-      UiButtonStyle st =
-          (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN &&
-           ui->wb_kelvin_value == K_QUICK[i])
-              ? UI_BTN_STYLE_ACTIVE
-              : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(renderer, lbl, row_x, row_y, 80, btn_h, st,
-                                live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-                                live_btn_pressed(ui, &ui->popup_opt_rects[i]),
-                                &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
-    }
-  } else if (ui->active_popup == LIVE_POPUP_SS) {
-    ui->popup_opt_count = SHUTTER_PRESET_COUNT;
-    for (int i = 0; i < SHUTTER_PRESET_COUNT; ++i) {
-      if (i == 7) {
-        row_x = start_x;
-        row_y += btn_h + 6;
-      }
-      UiButtonStyle st = (ui->shutter_preset_index == i) ? UI_BTN_STYLE_ACTIVE
-                                                         : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(
-          renderer, SHUTTER_PRESETS[i].label, row_x, row_y, 92, btn_h, st,
-          live_btn_hovered(ui, &ui->popup_opt_rects[i]),
-          live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
-      ui->popup_opt_rects[i] = r;
-      row_x += r.w + gap;
+        renderer, items[i].label, panel.x + items[i].rel_x,
+        panel.y + items[i].rel_y, items[i].min_w, btn_h, items[i].style,
+        live_btn_hovered(ui, items[i].target_rect),
+        live_btn_pressed(ui, items[i].target_rect), &r);
+    if (items[i].target_rect) {
+      *(items[i].target_rect) = r;
     }
   }
 }
@@ -835,7 +872,7 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
   if (bh < 32) {
     bh = 32;
   }
-  int bw = 136;
+  int bw = 156;
 
   char ss_str[48];
   if (status->shutter_us_setting > 0) {
@@ -846,6 +883,10 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
     char a_ss[24];
     format_ss_short(status->actual_exposure_us, a_ss, sizeof(a_ss));
     snprintf(ss_str, sizeof(ss_str), "SS:Auto(%s)", a_ss);
+  }
+  int w_ss = calc_button_width(ss_str, bw);
+  if (w_ss > bw) {
+    bw = w_ss;
   }
   text_renderer_draw_button(renderer, ss_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_SS
