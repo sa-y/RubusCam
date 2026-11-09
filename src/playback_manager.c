@@ -2122,20 +2122,6 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
   pm->grid_btn_mode = r;
   bx += r.w + gap_btn;
 
-  text_renderer_draw_button(renderer, "< Page", bx, by, 82, btn_h,
-                            UI_BTN_STYLE_DEFAULT,
-                            is_btn_hovered(pm, &pm->grid_btn_prev_page),
-                            is_btn_pressed(pm, &pm->grid_btn_prev_page), &r);
-  pm->grid_btn_prev_page = r;
-  bx += r.w + gap_btn;
-
-  text_renderer_draw_button(renderer, "Page >", bx, by, 82, btn_h,
-                            UI_BTN_STYLE_DEFAULT,
-                            is_btn_hovered(pm, &pm->grid_btn_next_page),
-                            is_btn_pressed(pm, &pm->grid_btn_next_page), &r);
-  pm->grid_btn_next_page = r;
-  bx += r.w + gap_btn;
-
   const DcfMediaEntry *cur_sel =
       (pm->current_index >= 0 &&
        (size_t)pm->current_index < pm->media_list.count)
@@ -2168,7 +2154,20 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
   text_renderer_draw_badge(renderer, page_badge, bx, by + 3, white, panel_bg,
                            panel_border, NULL);
 
-  int margin_x = 20;
+  /* Left/Right vertically centered page navigation buttons */
+  int nav_h = 68;
+  int nav_w = 48;
+  int nav_y = (win_h - nav_h) / 2;
+  text_renderer_draw_button(
+      renderer, "<", 12, nav_y, nav_w, nav_h, UI_BTN_STYLE_DEFAULT,
+      is_btn_hovered(pm, &pm->grid_btn_prev_page),
+      is_btn_pressed(pm, &pm->grid_btn_prev_page), &pm->grid_btn_prev_page);
+  text_renderer_draw_button(
+      renderer, ">", win_w - nav_w - 12, nav_y, nav_w, nav_h,
+      UI_BTN_STYLE_DEFAULT, is_btn_hovered(pm, &pm->grid_btn_next_page),
+      is_btn_pressed(pm, &pm->grid_btn_next_page), &pm->grid_btn_next_page);
+
+  int margin_x = 68;
   int top_y = 56;
   int bottom_y = win_h - 46;
   int avail_w = win_w - margin_x * 2;
