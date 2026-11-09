@@ -475,13 +475,65 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     return;
   }
 
-  int panel_w = win_w - 24;
-  if (panel_w > 860) {
-    panel_w = 860;
+  /* Determine right edge of the left vertical settings column */
+  int left_col_right = ui->hud_btn_ss.x + ui->hud_btn_ss.w;
+  if (ui->hud_btn_iso.x + ui->hud_btn_iso.w > left_col_right) {
+    left_col_right = ui->hud_btn_iso.x + ui->hud_btn_iso.w;
   }
-  int panel_h = (ui->active_popup == LIVE_POPUP_SS) ? 148 : 106;
-  int panel_x = 12;
-  int panel_y = win_h - 56 - panel_h - 8;
+  if (left_col_right < 152) {
+    left_col_right = 152;
+  }
+
+  int panel_x = left_col_right + 10;
+  int right_limit = (ui->btn_shutter.x > 0 ? ui->btn_shutter.x : (win_w - 110)) - 10;
+  int panel_w = right_limit - panel_x;
+  if (panel_w > 740) {
+    panel_w = 740;
+  }
+  if (panel_w < 360) {
+    panel_w = 360;
+  }
+
+  bool two_rows = (ui->active_popup == LIVE_POPUP_SS ||
+                   ui->active_popup == LIVE_POPUP_EV ||
+                   ui->active_popup == LIVE_POPUP_TEMP);
+  int panel_h = two_rows ? 148 : 106;
+
+  /* Align popup vertically near the active left-column button */
+  int anchor_y = 58;
+  switch (ui->active_popup) {
+  case LIVE_POPUP_SS:
+    anchor_y = ui->hud_btn_ss.y;
+    break;
+  case LIVE_POPUP_ISO:
+    anchor_y = ui->hud_btn_iso.y;
+    break;
+  case LIVE_POPUP_EV:
+    anchor_y = ui->hud_btn_ev.y;
+    break;
+  case LIVE_POPUP_WB:
+    anchor_y = ui->hud_btn_wb.y;
+    break;
+  case LIVE_POPUP_TEMP:
+    anchor_y = ui->hud_btn_temp.y;
+    break;
+  case LIVE_POPUP_MET:
+    anchor_y = ui->hud_btn_met.y;
+    break;
+  case LIVE_POPUP_QUAL:
+    anchor_y = ui->hud_btn_qual.y;
+    break;
+  default:
+    break;
+  }
+
+  int panel_y = anchor_y;
+  if (panel_y + panel_h > win_h - 12) {
+    panel_y = win_h - panel_h - 12;
+  }
+  if (panel_y < 56) {
+    panel_y = 56;
+  }
 
   SDL_Rect panel = {panel_x, panel_y, panel_w, panel_h};
   ui->popup_panel_rect = panel;
@@ -526,7 +578,8 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
       UI_BTN_STYLE_DEFAULT, live_btn_hovered(ui, &ui->popup_btn_close),
       live_btn_pressed(ui, &ui->popup_btn_close), &ui->popup_btn_close);
 
-  int row_x = panel.x + 14;
+  int start_x = panel.x + 14;
+  int row_x = start_x;
   int row_y = panel.y + 44;
   int gap = 8;
   int btn_h = 42;
@@ -543,7 +596,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
       }
       UiButtonStyle st = (ui->iso_preset_index == i) ? UI_BTN_STYLE_ACTIVE
                                                      : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(renderer, lbl, row_x, row_y, 88, btn_h, st,
+      text_renderer_draw_button(renderer, lbl, row_x, row_y, 86, btn_h, st,
                                 live_btn_hovered(ui, &ui->popup_opt_rects[i]),
                                 live_btn_pressed(ui, &ui->popup_opt_rects[i]),
                                 &r);
@@ -557,7 +610,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
                              ? UI_BTN_STYLE_ACTIVE
                              : UI_BTN_STYLE_DEFAULT;
       text_renderer_draw_button(
-          renderer, WB_PRESETS[i].ui_label, row_x, row_y, 96, btn_h, st,
+          renderer, WB_PRESETS[i].ui_label, row_x, row_y, 90, btn_h, st,
           live_btn_hovered(ui, &ui->popup_opt_rects[i]),
           live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
       ui->popup_opt_rects[i] = r;
@@ -590,7 +643,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     }
   } else if (ui->active_popup == LIVE_POPUP_EV) {
     text_renderer_draw_button(
-        renderer, "- 1/3 EV", row_x, row_y, 104, btn_h, UI_BTN_STYLE_DEFAULT,
+        renderer, "- 1/3 EV", row_x, row_y, 108, btn_h, UI_BTN_STYLE_DEFAULT,
         live_btn_hovered(ui, &ui->popup_btn_minus),
         live_btn_pressed(ui, &ui->popup_btn_minus), &ui->popup_btn_minus);
     row_x += ui->popup_btn_minus.w + gap;
@@ -599,27 +652,29 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     snprintf(cur_ev, sizeof(cur_ev), "Reset 0.0 (Now: %+.1f)",
              (float)ui->ev_step_index / 3.0f);
     text_renderer_draw_button(
-        renderer, cur_ev, row_x, row_y, 180, btn_h,
+        renderer, cur_ev, row_x, row_y, 184, btn_h,
         ui->ev_step_index == 0 ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DEFAULT,
         live_btn_hovered(ui, &ui->popup_btn_reset),
         live_btn_pressed(ui, &ui->popup_btn_reset), &ui->popup_btn_reset);
     row_x += ui->popup_btn_reset.w + gap;
 
     text_renderer_draw_button(
-        renderer, "+ 1/3 EV", row_x, row_y, 104, btn_h, UI_BTN_STYLE_DEFAULT,
+        renderer, "+ 1/3 EV", row_x, row_y, 108, btn_h, UI_BTN_STYLE_DEFAULT,
         live_btn_hovered(ui, &ui->popup_btn_plus),
         live_btn_pressed(ui, &ui->popup_btn_plus), &ui->popup_btn_plus);
-    row_x += ui->popup_btn_plus.w + gap * 2;
+
+    row_x = start_x;
+    row_y += btn_h + 6;
 
     static const int EV_QUICK_STEPS[5] = {-6, -3, 0, 3, 6};
     ui->popup_opt_count = 5;
     for (int i = 0; i < 5; ++i) {
       char lbl[24];
-      snprintf(lbl, sizeof(lbl), "%+d.0", EV_QUICK_STEPS[i] / 3);
+      snprintf(lbl, sizeof(lbl), "%+d.0 EV", EV_QUICK_STEPS[i] / 3);
       UiButtonStyle st = (ui->ev_step_index == EV_QUICK_STEPS[i])
                              ? UI_BTN_STYLE_ACTIVE
                              : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(renderer, lbl, row_x, row_y, 64, btn_h, st,
+      text_renderer_draw_button(renderer, lbl, row_x, row_y, 80, btn_h, st,
                                 live_btn_hovered(ui, &ui->popup_opt_rects[i]),
                                 live_btn_pressed(ui, &ui->popup_opt_rects[i]),
                                 &r);
@@ -628,7 +683,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     }
   } else if (ui->active_popup == LIVE_POPUP_TEMP) {
     text_renderer_draw_button(
-        renderer, "- 500K", row_x, row_y, 96, btn_h, UI_BTN_STYLE_DEFAULT,
+        renderer, "- 500K", row_x, row_y, 100, btn_h, UI_BTN_STYLE_DEFAULT,
         live_btn_hovered(ui, &ui->popup_btn_minus),
         live_btn_pressed(ui, &ui->popup_btn_minus), &ui->popup_btn_minus);
     row_x += ui->popup_btn_minus.w + gap;
@@ -636,7 +691,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     char cur_k[32];
     snprintf(cur_k, sizeof(cur_k), "5500K (Now: %dK)", ui->wb_kelvin_value);
     text_renderer_draw_button(
-        renderer, cur_k, row_x, row_y, 170, btn_h,
+        renderer, cur_k, row_x, row_y, 176, btn_h,
         ui->wb_kelvin_value == 5500 ? UI_BTN_STYLE_ACTIVE
                                     : UI_BTN_STYLE_DEFAULT,
         live_btn_hovered(ui, &ui->popup_btn_reset),
@@ -644,10 +699,12 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     row_x += ui->popup_btn_reset.w + gap;
 
     text_renderer_draw_button(
-        renderer, "+ 500K", row_x, row_y, 96, btn_h, UI_BTN_STYLE_DEFAULT,
+        renderer, "+ 500K", row_x, row_y, 100, btn_h, UI_BTN_STYLE_DEFAULT,
         live_btn_hovered(ui, &ui->popup_btn_plus),
         live_btn_pressed(ui, &ui->popup_btn_plus), &ui->popup_btn_plus);
-    row_x += ui->popup_btn_plus.w + gap * 2;
+
+    row_x = start_x;
+    row_y += btn_h + 6;
 
     static const int K_QUICK[5] = {2800, 4000, 5500, 6500, 8000};
     ui->popup_opt_count = 5;
@@ -659,7 +716,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
            ui->wb_kelvin_value == K_QUICK[i])
               ? UI_BTN_STYLE_ACTIVE
               : UI_BTN_STYLE_DEFAULT;
-      text_renderer_draw_button(renderer, lbl, row_x, row_y, 70, btn_h, st,
+      text_renderer_draw_button(renderer, lbl, row_x, row_y, 80, btn_h, st,
                                 live_btn_hovered(ui, &ui->popup_opt_rects[i]),
                                 live_btn_pressed(ui, &ui->popup_opt_rects[i]),
                                 &r);
@@ -668,7 +725,6 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     }
   } else if (ui->active_popup == LIVE_POPUP_SS) {
     ui->popup_opt_count = SHUTTER_PRESET_COUNT;
-    int start_x = row_x;
     for (int i = 0; i < SHUTTER_PRESET_COUNT; ++i) {
       if (i == 7) {
         row_x = start_x;
@@ -677,7 +733,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
       UiButtonStyle st = (ui->shutter_preset_index == i) ? UI_BTN_STYLE_ACTIVE
                                                          : UI_BTN_STYLE_DEFAULT;
       text_renderer_draw_button(
-          renderer, SHUTTER_PRESETS[i].label, row_x, row_y, 96, btn_h, st,
+          renderer, SHUTTER_PRESETS[i].label, row_x, row_y, 92, btn_h, st,
           live_btn_hovered(ui, &ui->popup_opt_rects[i]),
           live_btn_pressed(ui, &ui->popup_opt_rects[i]), &r);
       ui->popup_opt_rects[i] = r;
@@ -709,26 +765,6 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
   ui->top_btn_play = r;
   tx += r.w + tgap;
 
-  if (af_supported) {
-    CameraAfStatus af_st = camera_stream_get_af_status(camera);
-    const char *af_lbl = "AF [F]";
-    UiButtonStyle af_style = UI_BTN_STYLE_DEFAULT;
-    if (af_st == CAMERA_AF_STATUS_SCANNING) {
-      af_lbl = "AF... [F]";
-      af_style = UI_BTN_STYLE_ACCENT;
-    } else if (af_st == CAMERA_AF_STATUS_FOCUSED) {
-      af_lbl = "AF OK [F]";
-      af_style = UI_BTN_STYLE_SUCCESS;
-    }
-    text_renderer_draw_button(renderer, af_lbl, tx, ty, 92, th, af_style,
-                              live_btn_hovered(ui, &ui->top_btn_af),
-                              live_btn_pressed(ui, &ui->top_btn_af), &r);
-    ui->top_btn_af = r;
-    tx += r.w + tgap;
-  } else {
-    ui->top_btn_af = (SDL_Rect){0, 0, 0, 0};
-  }
-
   text_renderer_draw_button(renderer, "Reset [R]", tx, ty, 96, th,
                             UI_BTN_STYLE_DEFAULT,
                             live_btn_hovered(ui, &ui->top_btn_reset),
@@ -751,23 +787,55 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                              NULL);
   }
 
-  /* 3. Right-edge large floating Shutter Button */
+  /* 3. Right-edge large floating Shutter Button + Focus Button underneath */
   bool still_busy = camera_stream_is_still_pending(camera);
   int sh_w = 98;
   int sh_h = 84;
+  int af_h = 52;
+  int af_gap = 10;
+  int right_group_h = af_supported ? (sh_h + af_gap + af_h) : sh_h;
   int sh_x = win_w - sh_w - 12;
-  int sh_y = (win_h - sh_h) / 2;
+  int sh_y = (win_h - right_group_h) / 2;
+
   text_renderer_draw_button(
       renderer, still_busy ? "WAIT..." : "SHOT", sh_x, sh_y, sh_w, sh_h,
       still_busy ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DANGER,
       live_btn_hovered(ui, &ui->btn_shutter),
       live_btn_pressed(ui, &ui->btn_shutter), &ui->btn_shutter);
 
-  /* 4. Bottom interactive parameter HUD bar */
+  if (af_supported) {
+    CameraAfStatus af_st = camera_stream_get_af_status(camera);
+    const char *af_lbl = "AF [F]";
+    UiButtonStyle af_style = UI_BTN_STYLE_DEFAULT;
+    if (af_st == CAMERA_AF_STATUS_SCANNING) {
+      af_lbl = "AF... [F]";
+      af_style = UI_BTN_STYLE_ACCENT;
+    } else if (af_st == CAMERA_AF_STATUS_FOCUSED) {
+      af_lbl = "AF OK [F]";
+      af_style = UI_BTN_STYLE_SUCCESS;
+    }
+    int af_y = sh_y + sh_h + af_gap;
+    text_renderer_draw_button(renderer, af_lbl, sh_x, af_y, sh_w, af_h,
+                              af_style, live_btn_hovered(ui, &ui->top_btn_af),
+                              live_btn_pressed(ui, &ui->top_btn_af),
+                              &ui->top_btn_af);
+  } else {
+    ui->top_btn_af = (SDL_Rect){0, 0, 0, 0};
+  }
+
+  /* 4. Left-edge vertical shooting parameter column */
   int bx = 12;
-  int bh = 40;
-  int by = win_h - bh - 10;
+  int by = 56;
   int bgap = 6;
+  int avail_h = win_h - by - 10;
+  int bh = (avail_h - 7 * bgap) / 8;
+  if (bh > 40) {
+    bh = 40;
+  }
+  if (bh < 32) {
+    bh = 32;
+  }
+  int bw = 136;
 
   char ss_str[48];
   if (status->shutter_us_setting > 0) {
@@ -779,7 +847,7 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
     format_ss_short(status->actual_exposure_us, a_ss, sizeof(a_ss));
     snprintf(ss_str, sizeof(ss_str), "SS:Auto(%s)", a_ss);
   }
-  text_renderer_draw_button(renderer, ss_str, bx, by, 108, bh,
+  text_renderer_draw_button(renderer, ss_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_SS
                                 ? UI_BTN_STYLE_ACTIVE
                                 : (status->shutter_us_setting > 0
@@ -788,7 +856,7 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                             live_btn_hovered(ui, &ui->hud_btn_ss),
                             live_btn_pressed(ui, &ui->hud_btn_ss), &r);
   ui->hud_btn_ss = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   char iso_str[48];
   if (status->iso_setting > 0) {
@@ -801,7 +869,7 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
     actual_iso = ((actual_iso + 5) / 10) * 10;
     snprintf(iso_str, sizeof(iso_str), "ISO:Auto(%d)", actual_iso);
   }
-  text_renderer_draw_button(renderer, iso_str, bx, by, 104, bh,
+  text_renderer_draw_button(renderer, iso_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_ISO
                                 ? UI_BTN_STYLE_ACTIVE
                                 : (status->iso_setting > 0
@@ -810,11 +878,11 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                             live_btn_hovered(ui, &ui->hud_btn_iso),
                             live_btn_pressed(ui, &ui->hud_btn_iso), &r);
   ui->hud_btn_iso = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   char ev_str[32];
   snprintf(ev_str, sizeof(ev_str), "EV:%+.1f", status->ev_compensation);
-  text_renderer_draw_button(renderer, ev_str, bx, by, 82, bh,
+  text_renderer_draw_button(renderer, ev_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_EV
                                 ? UI_BTN_STYLE_ACTIVE
                                 : (ui->ev_step_index != 0
@@ -823,12 +891,12 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                             live_btn_hovered(ui, &ui->hud_btn_ev),
                             live_btn_pressed(ui, &ui->hud_btn_ev), &r);
   ui->hud_btn_ev = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   char wb_str[48];
   snprintf(wb_str, sizeof(wb_str), "WB:%s",
            WB_PRESETS[ui->wb_preset_index].ui_label);
-  text_renderer_draw_button(renderer, wb_str, bx, by, 96, bh,
+  text_renderer_draw_button(renderer, wb_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_WB
                                 ? UI_BTN_STYLE_ACTIVE
                                 : (ui->wb_preset_index != 0
@@ -837,7 +905,7 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                             live_btn_hovered(ui, &ui->hud_btn_wb),
                             live_btn_pressed(ui, &ui->hud_btn_wb), &r);
   ui->hud_btn_wb = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   int disp_k = (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN)
                    ? ui->wb_kelvin_value
@@ -845,9 +913,9 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                           ? ((status->actual_colour_temp_k + 50) / 100) * 100
                           : 5500);
   char k_str[32];
-  snprintf(k_str, sizeof(k_str), "%dK", disp_k);
+  snprintf(k_str, sizeof(k_str), "K:%dK", disp_k);
   text_renderer_draw_button(
-      renderer, k_str, bx, by, 72, bh,
+      renderer, k_str, bx, by, bw, bh,
       ui->active_popup == LIVE_POPUP_TEMP
           ? UI_BTN_STYLE_ACTIVE
           : (WB_PRESETS[ui->wb_preset_index].mode == CAMERA_WB_MODE_KELVIN
@@ -856,20 +924,20 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
       live_btn_hovered(ui, &ui->hud_btn_temp),
       live_btn_pressed(ui, &ui->hud_btn_temp), &r);
   ui->hud_btn_temp = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   text_renderer_draw_button(
-      renderer, ui->awb_locked ? "AWB:LOCK" : "AWB:Free", bx, by, 90, bh,
+      renderer, ui->awb_locked ? "AWB:LOCK" : "AWB:Free", bx, by, bw, bh,
       ui->awb_locked ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DEFAULT,
       live_btn_hovered(ui, &ui->hud_btn_lock),
       live_btn_pressed(ui, &ui->hud_btn_lock), &r);
   ui->hud_btn_lock = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   char met_str[32];
   snprintf(met_str, sizeof(met_str), "Met:%s",
            METERING_PRESETS[ui->metering_preset_index].ui_label);
-  text_renderer_draw_button(renderer, met_str, bx, by, 96, bh,
+  text_renderer_draw_button(renderer, met_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_MET
                                 ? UI_BTN_STYLE_ACTIVE
                                 : (ui->metering_preset_index != 0
@@ -878,12 +946,12 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                             live_btn_hovered(ui, &ui->hud_btn_met),
                             live_btn_pressed(ui, &ui->hud_btn_met), &r);
   ui->hud_btn_met = r;
-  bx += r.w + bgap;
+  by += r.h + bgap;
 
   char q_str[32];
   snprintf(q_str, sizeof(q_str), "JPG:%s",
            JPEG_QUALITY_PRESETS[ui->quality_preset_index].hud_label);
-  text_renderer_draw_button(renderer, q_str, bx, by, 108, bh,
+  text_renderer_draw_button(renderer, q_str, bx, by, bw, bh,
                             ui->active_popup == LIVE_POPUP_QUAL
                                 ? UI_BTN_STYLE_ACTIVE
                                 : UI_BTN_STYLE_DEFAULT,
@@ -891,7 +959,7 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                             live_btn_pressed(ui, &ui->hud_btn_qual), &r);
   ui->hud_btn_qual = r;
 
-  /* 5. Active parameter popup selector above HUD bar */
+  /* 5. Active parameter popup selector next to the left parameter column */
   render_live_popup(renderer, ui, win_w, win_h);
 }
 
@@ -1178,8 +1246,8 @@ int main(int argc, char *argv[]) {
                                              : "DCIM/YYYYMMDD");
   }
 
-  const int screen_width = 1024;
-  const int screen_height = 600;
+  const int screen_width = 800;
+  const int screen_height = 480;
 
   SDL_Window *window = SDL_CreateWindow(
       "RubusCam", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, screen_width,
@@ -1195,6 +1263,9 @@ int main(int argc, char *argv[]) {
   int cur_win_w = screen_width;
   int cur_win_h = screen_height;
   SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
+  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+              "%s: %d: Window Size : (%d, %d)",
+              __FILE__, __LINE__, cur_win_w, cur_win_h);
 
   // Attempt hardware accelerated renderer with VSync, fallback to default if
   // failed
