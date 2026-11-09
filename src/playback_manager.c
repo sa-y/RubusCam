@@ -819,10 +819,12 @@ static void execute_delete_all_unprotected(PlaybackManager *pm,
 
   char msg[128];
   if (deleted == 0) {
-    snprintf(msg, sizeof(msg), "No photos to delete (All photos are protected)");
+    snprintf(msg, sizeof(msg),
+             "No photos to delete (All photos are protected)");
   } else {
-    snprintf(msg, sizeof(msg), "Deleted %d unprotected photo(s) (%zu remaining)",
-             deleted, pm->media_list.count);
+    snprintf(msg, sizeof(msg),
+             "Deleted %d unprotected photo(s) (%zu remaining)", deleted,
+             pm->media_list.count);
   }
   set_toast(pm, msg, 2800);
 }
@@ -1236,8 +1238,7 @@ bool playback_manager_handle_pointer_move(PlaybackManager *pm,
 
   int total_dx = x - pm->down_start_x;
   int total_dy = y - pm->down_start_y;
-  if (!pm->is_dragging &&
-      (abs(total_dx) > 10 || abs(total_dy) > 10)) {
+  if (!pm->is_dragging && (abs(total_dx) > 10 || abs(total_dy) > 10)) {
     pm->is_dragging = true;
   }
 
@@ -1431,7 +1432,8 @@ bool playback_manager_handle_pointer_up(PlaybackManager *pm,
       return true;
     }
 
-    /* Single tap on any thumbnail cell selects it and immediately opens 1x view */
+    /* Single tap on any thumbnail cell selects it and immediately opens 1x view
+     */
     for (int i = 0; i < per_page; ++i) {
       int media_idx = pm->grid_cell_media_indices[i];
       if (media_idx >= 0 && media_idx < count &&
@@ -1551,10 +1553,10 @@ bool playback_manager_handle_pointer_up(PlaybackManager *pm,
       pm->last_tap_ms = 0;
       if (pm->zoom_step_index == 0) {
         /* Zoom into 2x centered on the tapped point */
-        float rel_x = (float)(x - pm->pb_viewport_rect.x) /
-                      (float)pm->pb_viewport_rect.w;
-        float rel_y = (float)(y - pm->pb_viewport_rect.y) /
-                      (float)pm->pb_viewport_rect.h;
+        float rel_x =
+            (float)(x - pm->pb_viewport_rect.x) / (float)pm->pb_viewport_rect.w;
+        float rel_y =
+            (float)(y - pm->pb_viewport_rect.y) / (float)pm->pb_viewport_rect.h;
         pm->zoom_step_index = 1;
         pm->pan_center_x = rel_x;
         pm->pan_center_y = rel_y;
@@ -1823,16 +1825,14 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
   /* Left/Right previous/next navigation buttons in 1x mode */
   if (pm->zoom_step_index == 0 && pm->media_list.count > 1) {
     int nav_y = (win_h - 68) / 2;
-    text_renderer_draw_button(renderer, "<", 12, nav_y, 48, 68,
-                              UI_BTN_STYLE_DEFAULT,
-                              is_btn_hovered(pm, &pm->pb_btn_prev),
-                              is_btn_pressed(pm, &pm->pb_btn_prev),
-                              &pm->pb_btn_prev);
-    text_renderer_draw_button(renderer, ">", win_w - 60, nav_y, 48, 68,
-                              UI_BTN_STYLE_DEFAULT,
-                              is_btn_hovered(pm, &pm->pb_btn_next),
-                              is_btn_pressed(pm, &pm->pb_btn_next),
-                              &pm->pb_btn_next);
+    text_renderer_draw_button(
+        renderer, "<", 12, nav_y, 48, 68, UI_BTN_STYLE_DEFAULT,
+        is_btn_hovered(pm, &pm->pb_btn_prev),
+        is_btn_pressed(pm, &pm->pb_btn_prev), &pm->pb_btn_prev);
+    text_renderer_draw_button(
+        renderer, ">", win_w - 60, nav_y, 48, 68, UI_BTN_STYLE_DEFAULT,
+        is_btn_hovered(pm, &pm->pb_btn_next),
+        is_btn_pressed(pm, &pm->pb_btn_next), &pm->pb_btn_next);
   } else {
     pm->pb_btn_prev = (SDL_Rect){0, 0, 0, 0};
     pm->pb_btn_next = (SDL_Rect){0, 0, 0, 0};
@@ -2003,9 +2003,8 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
           : NULL;
 
   text_renderer_draw_button(
-      renderer,
-      (cur_sel && cur_sel->is_protected) ? "Locked [L]" : "Lock [L]", bx, by,
-      92, btn_h,
+      renderer, (cur_sel && cur_sel->is_protected) ? "Locked [L]" : "Lock [L]",
+      bx, by, 92, btn_h,
       (cur_sel && cur_sel->is_protected) ? UI_BTN_STYLE_ACCENT
                                          : UI_BTN_STYLE_DEFAULT,
       is_btn_hovered(pm, &pm->grid_btn_lock),
@@ -2164,10 +2163,8 @@ static void render_delete_dialog(PlaybackManager *pm, SDL_Renderer *renderer,
   text_renderer_draw_text(renderer, title, dlg.x + 20, dlg.y + 18, title_col,
                           NULL, NULL);
 
-  const char *options[3] = {
-      "[1] Delete Current Photo",
-      "[2] Delete All Unprotected Photos",
-      "[3] Cancel"};
+  const char *options[3] = {"[1] Delete Current Photo",
+                            "[2] Delete All Unprotected Photos", "[3] Cancel"};
 
   for (int i = 0; i < 3; ++i) {
     SDL_Rect row = {dlg.x + 20, dlg.y + 58 + i * 44, dlg.w - 40, 38};
@@ -2180,7 +2177,8 @@ static void render_delete_dialog(PlaybackManager *pm, SDL_Renderer *renderer,
       style = (i == 2) ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DANGER;
     }
     text_renderer_draw_button(renderer, options[i], row.x, row.y, row.w, row.h,
-                              style, hovered, pressed, &pm->dlg_option_rects[i]);
+                              style, hovered, pressed,
+                              &pm->dlg_option_rects[i]);
   }
 
   SDL_Color hint_col = {190, 195, 205, 255};
@@ -2237,9 +2235,8 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     bx += r.w + gap;
 
     text_renderer_draw_button(
-        renderer,
-        pm->quick_review_protected ? "Protected [L]" : "Protect [L]", bx, by,
-        134, btn_h,
+        renderer, pm->quick_review_protected ? "Protected [L]" : "Protect [L]",
+        bx, by, 134, btn_h,
         pm->quick_review_protected ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DEFAULT,
         is_btn_hovered(pm, &pm->qr_btn_protect),
         is_btn_pressed(pm, &pm->qr_btn_protect), &r);
@@ -2253,8 +2250,8 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     pm->qr_btn_playback = r;
     bx += r.w + gap;
 
-    text_renderer_draw_button(renderer, "Live View [Space]", bx, by, 156,
-                              btn_h, UI_BTN_STYLE_SUCCESS,
+    text_renderer_draw_button(renderer, "Live View [Space]", bx, by, 156, btn_h,
+                              UI_BTN_STYLE_SUCCESS,
                               is_btn_hovered(pm, &pm->qr_btn_live),
                               is_btn_pressed(pm, &pm->qr_btn_live), &r);
     pm->qr_btn_live = r;
@@ -2273,11 +2270,10 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
     int bh = 48;
     int bx = (win_w - bw) / 2;
     int by = (win_h - bh) / 2;
-    text_renderer_draw_button(renderer, empty_msg, bx, by, bw, bh,
-                              UI_BTN_STYLE_ACTIVE,
-                              is_btn_hovered(pm, &pm->empty_btn_live),
-                              is_btn_pressed(pm, &pm->empty_btn_live),
-                              &pm->empty_btn_live);
+    text_renderer_draw_button(
+        renderer, empty_msg, bx, by, bw, bh, UI_BTN_STYLE_ACTIVE,
+        is_btn_hovered(pm, &pm->empty_btn_live),
+        is_btn_pressed(pm, &pm->empty_btn_live), &pm->empty_btn_live);
     playback_manager_render_toast(pm, renderer, win_w, win_h);
     return;
   }

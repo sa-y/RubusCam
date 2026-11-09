@@ -875,11 +875,9 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
             float ny = std::clamp(m_afNormY.load(), 0.05f, 0.95f);
             unsigned int winW = std::max(64u, sensorRect.width / 6);
             unsigned int winH = std::max(64u, sensorRect.height / 6);
-            int winX = sensorRect.x +
-                       static_cast<int>(nx * sensorRect.width) -
+            int winX = sensorRect.x + static_cast<int>(nx * sensorRect.width) -
                        static_cast<int>(winW / 2);
-            int winY = sensorRect.y +
-                       static_cast<int>(ny * sensorRect.height) -
+            int winY = sensorRect.y + static_cast<int>(ny * sensorRect.height) -
                        static_cast<int>(winH / 2);
             winX = std::clamp(winX, sensorRect.x,
                               sensorRect.x +

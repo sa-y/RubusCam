@@ -520,9 +520,8 @@ bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
     }
 
     size_t seg_end = pos + seg_len;
-    bool is_exif_app1 =
-        (app1_len > 0 && marker == 0xE1 && seg_len >= 8 &&
-         memcmp(jpeg_data + pos + 2, "Exif\0\0", 6) == 0);
+    bool is_exif_app1 = (app1_len > 0 && marker == 0xE1 && seg_len >= 8 &&
+                         memcmp(jpeg_data + pos + 2, "Exif\0\0", 6) == 0);
 
     if (!is_exif_app1) {
       size_t chunk_len = seg_end - marker_start;

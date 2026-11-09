@@ -18,8 +18,7 @@ typedef struct MemRwBuffer {
 } MemRwBuffer;
 
 static Sint64 SDLCALL mem_rw_size(SDL_RWops *context) {
-  const MemRwBuffer *buf =
-      (const MemRwBuffer *)context->hidden.unknown.data1;
+  const MemRwBuffer *buf = (const MemRwBuffer *)context->hidden.unknown.data1;
   return buf ? (Sint64)buf->size : -1;
 }
 

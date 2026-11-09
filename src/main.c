@@ -126,6 +126,7 @@ typedef struct LiveUiController {
   uint32_t af_box_start_ms;
 
   /* Active popup selector state */
+  bool settings_visible;
   LivePopupType active_popup;
   SDL_Rect popup_panel_rect;
   SDL_Rect popup_btn_close;
@@ -136,6 +137,7 @@ typedef struct LiveUiController {
   int popup_opt_count;
 
   /* Live View interactive button hitboxes */
+  SDL_Rect top_btn_settings;
   SDL_Rect top_btn_play;
   SDL_Rect top_btn_af;
   SDL_Rect top_btn_reset;
@@ -495,11 +497,11 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     return;
   }
 
-  /* Determine right edge of the left vertical settings column across all 8 buttons */
+  /* Determine right edge of the left vertical settings column across all 8
+   * buttons */
   const SDL_Rect *left_btns[8] = {
-      &ui->hud_btn_ss,   &ui->hud_btn_iso,  &ui->hud_btn_ev,
-      &ui->hud_btn_wb,   &ui->hud_btn_temp, &ui->hud_btn_lock,
-      &ui->hud_btn_met,  &ui->hud_btn_qual,
+      &ui->hud_btn_ss,   &ui->hud_btn_iso,  &ui->hud_btn_ev,  &ui->hud_btn_wb,
+      &ui->hud_btn_temp, &ui->hud_btn_lock, &ui->hud_btn_met, &ui->hud_btn_qual,
   };
   int left_col_right = 152;
   for (int i = 0; i < 8; ++i) {
@@ -619,8 +621,8 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     it_minus->force_new_row = false;
 
     PopupBtnItem *it_reset = &items[item_count++];
-    snprintf(it_reset->label, sizeof(it_reset->label),
-             "Reset 0.0 (Now: %+.1f)", (float)ui->ev_step_index / 3.0f);
+    snprintf(it_reset->label, sizeof(it_reset->label), "Reset 0.0 (Now: %+.1f)",
+             (float)ui->ev_step_index / 3.0f);
     it_reset->min_w = 172;
     it_reset->style =
         ui->ev_step_index == 0 ? UI_BTN_STYLE_ACTIVE : UI_BTN_STYLE_DEFAULT;
@@ -638,8 +640,7 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     ui->popup_opt_count = 5;
     for (int i = 0; i < 5; ++i) {
       PopupBtnItem *it = &items[item_count++];
-      snprintf(it->label, sizeof(it->label), "%+d.0 EV",
-               EV_QUICK_STEPS[i] / 3);
+      snprintf(it->label, sizeof(it->label), "%+d.0 EV", EV_QUICK_STEPS[i] / 3);
       it->min_w = 76;
       it->style = (ui->ev_step_index == EV_QUICK_STEPS[i])
                       ? UI_BTN_STYLE_ACTIVE
@@ -788,30 +789,38 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
   /* 1. Touch AF reticle inside viewfinder */
   render_af_reticle(renderer, ui, camera);
 
-  /* 2. Top action bar */
+  /* 2. Top action bar (Top-left: Settings [+ Reset], Top-right: Quit) */
   int tx = 12;
   int ty = 10;
   int tgap = 8;
   int th = 38;
   SDL_Rect r;
 
-  text_renderer_draw_button(renderer, "Play [P]", tx, ty, 92, th,
-                            UI_BTN_STYLE_ACTIVE,
-                            live_btn_hovered(ui, &ui->top_btn_play),
-                            live_btn_pressed(ui, &ui->top_btn_play), &r);
-  ui->top_btn_play = r;
+  text_renderer_draw_button(renderer, "Settings", tx, ty, 104, th,
+                            ui->settings_visible ? UI_BTN_STYLE_ACTIVE
+                                                 : UI_BTN_STYLE_DEFAULT,
+                            live_btn_hovered(ui, &ui->top_btn_settings),
+                            live_btn_pressed(ui, &ui->top_btn_settings), &r);
+  ui->top_btn_settings = r;
   tx += r.w + tgap;
 
-  text_renderer_draw_button(renderer, "Reset [R]", tx, ty, 96, th,
-                            UI_BTN_STYLE_DEFAULT,
-                            live_btn_hovered(ui, &ui->top_btn_reset),
-                            live_btn_pressed(ui, &ui->top_btn_reset), &r);
-  ui->top_btn_reset = r;
-  tx += r.w + tgap;
+  if (ui->settings_visible) {
+    text_renderer_draw_button(renderer, "Reset [R]", tx, ty, 96, th,
+                              UI_BTN_STYLE_DEFAULT,
+                              live_btn_hovered(ui, &ui->top_btn_reset),
+                              live_btn_pressed(ui, &ui->top_btn_reset), &r);
+    ui->top_btn_reset = r;
+    tx += r.w + tgap;
+  } else {
+    ui->top_btn_reset = (SDL_Rect){0, 0, 0, 0};
+  }
+
+  int right_col_w = 98;
+  int right_col_x = win_w - right_col_w - 12;
 
   text_renderer_draw_button(
-      renderer, "Quit [Q]", win_w - 102, ty, 90, th, UI_BTN_STYLE_DANGER,
-      live_btn_hovered(ui, &ui->top_btn_quit),
+      renderer, "Quit [Q]", right_col_x, ty, right_col_w, th,
+      UI_BTN_STYLE_DANGER, live_btn_hovered(ui, &ui->top_btn_quit),
       live_btn_pressed(ui, &ui->top_btn_quit), &ui->top_btn_quit);
 
   if (pending_saves > 0) {
@@ -824,14 +833,15 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
                              NULL);
   }
 
-  /* 3. Right-edge large floating Shutter Button + Focus Button underneath */
+  /* 3. Right-edge large floating Shutter Button + Focus Button + Bottom-Right
+   * Play Button */
   bool still_busy = camera_stream_is_still_pending(camera);
-  int sh_w = 98;
+  int sh_w = right_col_w;
   int sh_h = 84;
   int af_h = 52;
   int af_gap = 10;
   int right_group_h = af_supported ? (sh_h + af_gap + af_h) : sh_h;
-  int sh_x = win_w - sh_w - 12;
+  int sh_x = right_col_x;
   int sh_y = (win_h - right_group_h) / 2;
 
   text_renderer_draw_button(
@@ -860,7 +870,27 @@ static void render_live_ui(SDL_Renderer *renderer, LiveUiController *ui,
     ui->top_btn_af = (SDL_Rect){0, 0, 0, 0};
   }
 
-  /* 4. Left-edge vertical shooting parameter column */
+  text_renderer_draw_button(
+      renderer, "Play [P]", right_col_x, win_h - th - 10, right_col_w, th,
+      UI_BTN_STYLE_ACTIVE, live_btn_hovered(ui, &ui->top_btn_play),
+      live_btn_pressed(ui, &ui->top_btn_play), &ui->top_btn_play);
+
+  /* 4. Left-edge vertical shooting parameter column (shown only when
+   * settings_visible is true) */
+  if (!ui->settings_visible) {
+    ui->hud_btn_ss = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_iso = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_ev = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_wb = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_temp = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_lock = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_met = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_qual = (SDL_Rect){0, 0, 0, 0};
+    ui->active_popup = LIVE_POPUP_NONE;
+    render_live_popup(renderer, ui, win_w, win_h);
+    return;
+  }
+
   int bx = 12;
   int by = 56;
   int bgap = 6;
@@ -1021,6 +1051,16 @@ static void handle_live_pointer_up(LiveUiController *ui, CameraStream *camera,
   ui->pointer_x = x;
   ui->pointer_y = y;
   ui->pointer_down = false;
+
+  /* Top-left Settings toggle button is always interactive */
+  if (ui_rect_contains(&ui->top_btn_settings, x, y) &&
+      ui_rect_contains(&ui->top_btn_settings, sx, sy)) {
+    ui->settings_visible = !ui->settings_visible;
+    if (!ui->settings_visible) {
+      ui->active_popup = LIVE_POPUP_NONE;
+    }
+    return;
+  }
 
   /* 1. Check active popup buttons first if open */
   if (ui->active_popup != LIVE_POPUP_NONE) {
@@ -1304,8 +1344,7 @@ int main(int argc, char *argv[]) {
   int cur_win_w = screen_width;
   int cur_win_h = screen_height;
   SDL_GetWindowSize(window, &cur_win_w, &cur_win_h);
-  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-              "%s: %d: Window Size : (%d, %d)",
+  SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: Window Size : (%d, %d)",
               __FILE__, __LINE__, cur_win_w, cur_win_h);
 
   // Attempt hardware accelerated renderer with VSync, fallback to default if
@@ -1760,29 +1799,22 @@ int main(int argc, char *argv[]) {
       calculate_viewport_rect(cam_width, cam_height, cur_win_w, cur_win_h,
                               &live_ui.viewport_rect);
 
-                              SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-                              SDL_RenderClear(renderer);
+      SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+      SDL_RenderClear(renderer);
 
-                              SDL_RenderCopy(renderer, camera_texture, NULL,
-                                             &live_ui.viewport_rect);
+      SDL_RenderCopy(renderer, camera_texture, NULL, &live_ui.viewport_rect);
 
-                              // 6. Draw interactive touch/mouse Live UI, HUD
-                              // buttons, and popups
-                              CameraExposureStatus exp_status;
-                              camera_stream_get_exposure_status(camera,
-                                                                &exp_status);
-                              int pending_saves =
-                                  async_save_queue_get_pending_count(
-                                      &save_queue) +
-                                  (camera_stream_is_still_pending(camera) ? 1
-                                                                          : 0);
-                              render_live_ui(renderer, &live_ui, camera,
-                                             &exp_status, pending_saves,
-                                             cur_win_w, cur_win_h);
+      // 6. Draw interactive touch/mouse Live UI, HUD
+      // buttons, and popups
+      CameraExposureStatus exp_status;
+      camera_stream_get_exposure_status(camera, &exp_status);
+      int pending_saves = async_save_queue_get_pending_count(&save_queue) +
+                          (camera_stream_is_still_pending(camera) ? 1 : 0);
+      render_live_ui(renderer, &live_ui, camera, &exp_status, pending_saves,
+                     cur_win_w, cur_win_h);
 
-                              playback_manager_render_toast(&playback_mgr,
-                                                            renderer, cur_win_w,
-                                                            cur_win_h);
+      playback_manager_render_toast(&playback_mgr, renderer, cur_win_w,
+                                    cur_win_h);
     }
 
     // 7. Present frame to physical display
