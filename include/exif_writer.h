@@ -12,9 +12,17 @@ extern "C" {
 #endif
 
 /*
- * Maximum size in bytes of the generated JPEG APP1 (Exif 2.3) segment.
+ * Maximum size in bytes of the generated JPEG APP1 (Exif 2.3) segment,
+ * including an embedded IFD1 JPEG thumbnail (up to the 64 KB APP1 limit).
  */
-#define EXIF_MAX_APP1_BYTES 1024
+#define EXIF_MAX_APP1_BYTES 65536
+
+/*
+ * Target dimensions and JPEG quality for the embedded Exif IFD1 thumbnail.
+ */
+#define EXIF_THUMB_MAX_W 320
+#define EXIF_THUMB_MAX_H 200
+#define EXIF_THUMB_JPEG_QUALITY 75
 
 /*
  * Exif 2.3 metadata fields to embed into a captured JPEG file.
@@ -54,6 +62,18 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
                                size_t out_buf_capacity);
 
 /*
+ * Build a complete JPEG APP1 (0xFFE1) Exif 2.3 segment in out_buf, optionally
+ * embedding a compressed JPEG thumbnail in IFD1 when thumb_jpeg is non-NULL
+ * and fits within the APP1 segment.
+ * Returns the number of bytes written to out_buf, or 0 on error.
+ */
+size_t exif_build_app1_segment_with_thumbnail(const ExifMetadata *meta,
+                                              const uint8_t *thumb_jpeg,
+                                              size_t thumb_size,
+                                              uint8_t *out_buf,
+                                              size_t out_buf_capacity);
+
+/*
  * Write a JPEG buffer (already encoded in memory starting with 0xFFD8) to
  * filepath while injecting the Exif APP1 segment immediately after the SOI
  * marker (replacing any pre-existing Exif APP1 segments). Writes via a
@@ -62,6 +82,14 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
  */
 bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
                                size_t jpeg_size, const ExifMetadata *meta);
+
+/*
+ * Same as exif_write_jpeg_with_app1, but also embeds an optional compressed
+ * JPEG thumbnail into IFD1 of the Exif APP1 segment.
+ */
+bool exif_write_jpeg_with_app1_and_thumbnail(
+    const char *filepath, const uint8_t *jpeg_data, size_t jpeg_size,
+    const ExifMetadata *meta, const uint8_t *thumb_jpeg, size_t thumb_size);
 
 /*
  * Inject (or replace) an Exif APP1 segment into an existing JPEG file on disk

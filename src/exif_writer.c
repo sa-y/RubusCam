@@ -265,8 +265,11 @@ static bool put_ifd_srational(uint8_t *tiff_base, size_t tiff_cap,
   return true;
 }
 
-size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
-                               size_t out_buf_capacity) {
+size_t exif_build_app1_segment_with_thumbnail(const ExifMetadata *meta,
+                                              const uint8_t *thumb_jpeg,
+                                              size_t thumb_size,
+                                              uint8_t *out_buf,
+                                              size_t out_buf_capacity) {
   if (!meta || !out_buf || out_buf_capacity < 512) {
     return 0;
   }
@@ -290,7 +293,7 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
 
   uint8_t *ifd0_entries = tiff_base + ifd0_off + 2;
   size_t ifd0_next_ptr_off = ifd0_off + 2 + (size_t)ifd0_count * 12;
-  write_le32(tiff_base + ifd0_next_ptr_off, 0); /* No IFD1 */
+  write_le32(tiff_base + ifd0_next_ptr_off, 0); /* Updated below if IFD1 fits */
 
   size_t data_off = ifd0_next_ptr_off + 4;
 
@@ -433,7 +436,47 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
   /* SubIFD Entry 14: 0xA403 WhiteBalance (0 = Auto, 1 = Manual) */
   put_ifd_short(sub_entries + 14 * 12, 0xA403, meta->wb_mode);
 
-  /* 4. Finalize APP1 Marker Header */
+  /* 4. Optional IFD1 (Compressed JPEG Thumbnail, 6 entries sorted by tag) */
+  if (thumb_jpeg && thumb_size >= 4 && thumb_jpeg[0] == 0xFF &&
+      thumb_jpeg[1] == 0xD8) {
+    if (data_off & 1U) {
+      data_off++;
+    }
+    const uint16_t ifd1_count = 6;
+    size_t ifd1_off = data_off;
+    size_t ifd1_next_ptr_off = ifd1_off + 2 + (size_t)ifd1_count * 12;
+    size_t ifd1_data_off = ifd1_next_ptr_off + 4;
+    size_t needed_end = ifd1_data_off + 16 + thumb_size;
+
+    if (needed_end <= tiff_cap && (2 + 6 + needed_end) <= 65535) {
+      /* Link IFD0 -> IFD1 */
+      write_le32(tiff_base + ifd0_next_ptr_off, (uint32_t)ifd1_off);
+
+      write_le16(tiff_base + ifd1_off, ifd1_count);
+      uint8_t *ifd1_entries = tiff_base + ifd1_off + 2;
+      write_le32(tiff_base + ifd1_next_ptr_off, 0);
+
+      /* IFD1 Entry 0: 0x0103 Compression (6 = JPEG) */
+      put_ifd_short(ifd1_entries + 0 * 12, 0x0103, 6);
+      /* IFD1 Entry 1: 0x011A XResolution (72/1) */
+      put_ifd_rational(tiff_base, tiff_cap, ifd1_entries + 1 * 12, 0x011A, 72,
+                       1, &ifd1_data_off);
+      /* IFD1 Entry 2: 0x011B YResolution (72/1) */
+      put_ifd_rational(tiff_base, tiff_cap, ifd1_entries + 2 * 12, 0x011B, 72,
+                       1, &ifd1_data_off);
+      /* IFD1 Entry 3: 0x0128 ResolutionUnit (2 = inches) */
+      put_ifd_short(ifd1_entries + 3 * 12, 0x0128, 2);
+      /* IFD1 Entry 4: 0x0201 JPEGInterchangeFormat (offset from tiff_base) */
+      put_ifd_long(ifd1_entries + 4 * 12, 0x0201, (uint32_t)ifd1_data_off);
+      /* IFD1 Entry 5: 0x0202 JPEGInterchangeFormatLength */
+      put_ifd_long(ifd1_entries + 5 * 12, 0x0202, (uint32_t)thumb_size);
+
+      memcpy(tiff_base + ifd1_data_off, thumb_jpeg, thumb_size);
+      data_off = ifd1_data_off + thumb_size;
+    }
+  }
+
+  /* 5. Finalize APP1 Marker Header */
   size_t tiff_len = data_off;
   size_t app1_payload_len =
       2 + 6 + tiff_len; /* length field + "Exif\0\0" + TIFF */
@@ -450,27 +493,41 @@ size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
   return 2 + app1_payload_len;
 }
 
-bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
-                               size_t jpeg_size, const ExifMetadata *meta) {
+size_t exif_build_app1_segment(const ExifMetadata *meta, uint8_t *out_buf,
+                               size_t out_buf_capacity) {
+  return exif_build_app1_segment_with_thumbnail(meta, NULL, 0, out_buf,
+                                                out_buf_capacity);
+}
+
+bool exif_write_jpeg_with_app1_and_thumbnail(
+    const char *filepath, const uint8_t *jpeg_data, size_t jpeg_size,
+    const ExifMetadata *meta, const uint8_t *thumb_jpeg, size_t thumb_size) {
   if (!filepath || !jpeg_data || jpeg_size < 4 || jpeg_data[0] != 0xFF ||
       jpeg_data[1] != 0xD8) {
     return false;
   }
 
-  uint8_t app1_buf[EXIF_MAX_APP1_BYTES];
+  uint8_t *app1_buf = (uint8_t *)malloc(EXIF_MAX_APP1_BYTES);
+  if (!app1_buf) {
+    return false;
+  }
+
   size_t app1_len = 0;
   if (meta) {
-    app1_len = exif_build_app1_segment(meta, app1_buf, sizeof(app1_buf));
+    app1_len = exif_build_app1_segment_with_thumbnail(
+        meta, thumb_jpeg, thumb_size, app1_buf, EXIF_MAX_APP1_BYTES);
   }
 
   char tmp_path[540];
   int written = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", filepath);
   if (written < 0 || (size_t)written >= sizeof(tmp_path)) {
+    free(app1_buf);
     return false;
   }
 
   FILE *fp = fopen(tmp_path, "wb");
   if (!fp) {
+    free(app1_buf);
     return false;
   }
 
@@ -486,6 +543,8 @@ bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
       ok = false;
     }
   }
+  free(app1_buf);
+  app1_buf = NULL;
 
   /* 3. Write remainder of JPEG stream after SOI, skipping any pre-existing
    * Exif APP1 ("Exif\0\0") segments to prevent duplicate APP1 headers. */
@@ -556,6 +615,12 @@ bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
   }
 
   return true;
+}
+
+bool exif_write_jpeg_with_app1(const char *filepath, const uint8_t *jpeg_data,
+                               size_t jpeg_size, const ExifMetadata *meta) {
+  return exif_write_jpeg_with_app1_and_thumbnail(filepath, jpeg_data, jpeg_size,
+                                                 meta, NULL, 0);
 }
 
 bool exif_inject_into_jpeg_file(const char *filepath,

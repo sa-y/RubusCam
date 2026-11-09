@@ -122,6 +122,142 @@ static int SDLCALL mem_rw_close(SDL_RWops *context) {
   return 0;
 }
 
+static bool encode_surface_to_jpeg_mem(SDL_Surface *surface, int quality,
+                                       size_t init_capacity, uint8_t **out_jpeg,
+                                       size_t *out_size) {
+  if (!surface || !out_jpeg || !out_size) {
+    return false;
+  }
+  *out_jpeg = NULL;
+  *out_size = 0;
+
+  MemRwBuffer mem_buf;
+  memset(&mem_buf, 0, sizeof(mem_buf));
+  mem_buf.capacity = init_capacity > 0 ? init_capacity : (64U * 1024U);
+  mem_buf.data = (uint8_t *)malloc(mem_buf.capacity);
+  if (!mem_buf.data) {
+    return false;
+  }
+
+  SDL_RWops *rw = SDL_AllocRW();
+  if (!rw) {
+    free(mem_buf.data);
+    return false;
+  }
+  rw->size = mem_rw_size;
+  rw->seek = mem_rw_seek;
+  rw->read = mem_rw_read;
+  rw->write = mem_rw_write;
+  rw->close = mem_rw_close;
+  rw->type = SDL_RWOPS_UNKNOWN;
+  rw->hidden.unknown.data1 = &mem_buf;
+
+  int ret = IMG_SaveJPG_RW(surface, rw, 0, quality);
+  SDL_FreeRW(rw);
+
+  if (ret != 0 || mem_buf.error || mem_buf.size < 4) {
+    free(mem_buf.data);
+    return false;
+  }
+
+  *out_jpeg = mem_buf.data;
+  *out_size = mem_buf.size;
+  return true;
+}
+
+static bool build_thumbnail_jpeg(const uint8_t *raw_data, int width, int height,
+                                 int stride, bool is_bgr, uint8_t **out_jpeg,
+                                 size_t *out_size) {
+  if (!raw_data || width <= 0 || height <= 0 || !out_jpeg || !out_size) {
+    return false;
+  }
+  *out_jpeg = NULL;
+  *out_size = 0;
+
+  float scale_x = (float)EXIF_THUMB_MAX_W / (float)width;
+  float scale_y = (float)EXIF_THUMB_MAX_H / (float)height;
+  float scale = scale_x < scale_y ? scale_x : scale_y;
+  if (scale > 1.0f) {
+    scale = 1.0f;
+  }
+
+  int thumb_w = (int)((float)width * scale + 0.5f);
+  int thumb_h = (int)((float)height * scale + 0.5f);
+  if (thumb_w < 1) {
+    thumb_w = 1;
+  }
+  if (thumb_h < 1) {
+    thumb_h = 1;
+  }
+
+  int effective_stride = stride > 0 ? stride : (width * 3);
+  int thumb_stride = thumb_w * 3;
+  uint8_t *thumb_rgb =
+      (uint8_t *)malloc((size_t)thumb_stride * (size_t)thumb_h);
+  if (!thumb_rgb) {
+    return false;
+  }
+
+  const int r_idx = is_bgr ? 2 : 0;
+  const int g_idx = 1;
+  const int b_idx = is_bgr ? 0 : 2;
+
+  /* Fast 2x2 box-sampled downscaling directly from raw_data to RGB24 */
+  for (int ty = 0; ty < thumb_h; ++ty) {
+    int sy0 = (ty * height) / thumb_h;
+    int sy1 = ((ty + 1) * height) / thumb_h - 1;
+    if (sy1 < sy0) {
+      sy1 = sy0;
+    }
+    int sy_mid = (sy0 + sy1) >> 1;
+
+    const uint8_t *row0 = raw_data + (size_t)sy0 * (size_t)effective_stride;
+    const uint8_t *row1 = raw_data + (size_t)sy_mid * (size_t)effective_stride;
+    uint8_t *dst = thumb_rgb + (size_t)ty * (size_t)thumb_stride;
+
+    for (int tx = 0; tx < thumb_w; ++tx) {
+      int sx0 = (tx * width) / thumb_w;
+      int sx1 = ((tx + 1) * width) / thumb_w - 1;
+      if (sx1 < sx0) {
+        sx1 = sx0;
+      }
+      int sx_mid = (sx0 + sx1) >> 1;
+
+      const uint8_t *p00 = row0 + sx0 * 3;
+      const uint8_t *p10 = row0 + sx_mid * 3;
+      const uint8_t *p01 = row1 + sx0 * 3;
+      const uint8_t *p11 = row1 + sx_mid * 3;
+
+      dst[0] = (uint8_t)(((unsigned int)p00[r_idx] + (unsigned int)p10[r_idx] +
+                          (unsigned int)p01[r_idx] + (unsigned int)p11[r_idx] +
+                          2U) >>
+                         2);
+      dst[1] = (uint8_t)(((unsigned int)p00[g_idx] + (unsigned int)p10[g_idx] +
+                          (unsigned int)p01[g_idx] + (unsigned int)p11[g_idx] +
+                          2U) >>
+                         2);
+      dst[2] = (uint8_t)(((unsigned int)p00[b_idx] + (unsigned int)p10[b_idx] +
+                          (unsigned int)p01[b_idx] + (unsigned int)p11[b_idx] +
+                          2U) >>
+                         2);
+      dst += 3;
+    }
+  }
+
+  SDL_Surface *thumb_surf = SDL_CreateRGBSurfaceWithFormatFrom(
+      thumb_rgb, thumb_w, thumb_h, 24, thumb_stride, SDL_PIXELFORMAT_RGB24);
+  if (!thumb_surf) {
+    free(thumb_rgb);
+    return false;
+  }
+
+  bool ok = encode_surface_to_jpeg_mem(thumb_surf, EXIF_THUMB_JPEG_QUALITY,
+                                       16U * 1024U, out_jpeg, out_size);
+  SDL_FreeSurface(thumb_surf);
+  free(thumb_rgb);
+  return ok;
+}
+
 static bool encode_and_save_job(const AsyncSaveJob *job) {
   if (!job || !job->raw_data || job->width <= 0 || job->height <= 0 ||
       job->filepath[0] == '\0') {
@@ -147,45 +283,30 @@ static bool encode_and_save_job(const AsyncSaveJob *job) {
     quality = 100;
   }
 
-  /* Encode directly into an expandable in-memory buffer via SDL_RWops so we
-   * only write to the SD card once when injecting the Exif APP1 header */
-  MemRwBuffer mem_buf;
-  memset(&mem_buf, 0, sizeof(mem_buf));
-  mem_buf.capacity = 512U * 1024U;
-  mem_buf.data = (uint8_t *)malloc(mem_buf.capacity);
-  if (!mem_buf.data) {
-    SDL_FreeSurface(surface);
-    return false;
-  }
-
-  SDL_RWops *rw = SDL_AllocRW();
-  if (!rw) {
-    free(mem_buf.data);
-    SDL_FreeSurface(surface);
-    return false;
-  }
-  rw->size = mem_rw_size;
-  rw->seek = mem_rw_seek;
-  rw->read = mem_rw_read;
-  rw->write = mem_rw_write;
-  rw->close = mem_rw_close;
-  rw->type = SDL_RWOPS_UNKNOWN;
-  rw->hidden.unknown.data1 = &mem_buf;
-
-  int ret = IMG_SaveJPG_RW(surface, rw, 0, quality);
-  SDL_FreeRW(rw);
+  /* Encode full-resolution JPEG in memory */
+  uint8_t *jpeg_data = NULL;
+  size_t jpeg_size = 0;
+  bool enc_ok = encode_surface_to_jpeg_mem(surface, quality, 512U * 1024U,
+                                           &jpeg_data, &jpeg_size);
   SDL_FreeSurface(surface);
 
-  if (ret != 0 || mem_buf.error || mem_buf.size < 4) {
+  if (!enc_ok || !jpeg_data || jpeg_size < 4) {
     fprintf(stderr, "[エラー] IMG_SaveJPG_RW による保存に失敗しました: %s\n",
             IMG_GetError());
-    free(mem_buf.data);
+    free(jpeg_data);
     return false;
   }
 
-  bool ok = exif_write_jpeg_with_app1(job->filepath, mem_buf.data, mem_buf.size,
-                                      &job->exif);
-  free(mem_buf.data);
+  /* Encode small Exif IFD1 thumbnail JPEG in memory for fast Grid playback */
+  uint8_t *thumb_data = NULL;
+  size_t thumb_size = 0;
+  build_thumbnail_jpeg(job->raw_data, job->width, job->height, effective_stride,
+                       job->is_bgr, &thumb_data, &thumb_size);
+
+  bool ok = exif_write_jpeg_with_app1_and_thumbnail(
+      job->filepath, jpeg_data, jpeg_size, &job->exif, thumb_data, thumb_size);
+  free(thumb_data);
+  free(jpeg_data);
   return ok;
 }
 

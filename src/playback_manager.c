@@ -283,6 +283,20 @@ static void parse_exif_ifd(const uint8_t *tiff_base, size_t tiff_len,
         meta->focal_length_mm = (float)num / (float)den;
         meta->has_exif = true;
       }
+    } else if (tag == 0xA002 && meta->width <= 0) {
+      /* PixelXDimension (SHORT or LONG) */
+      int w = (type == 3) ? (int)read_u16(tiff_base + pos + 8, le)
+                          : (int)val_offset;
+      if (w > 0) {
+        meta->width = w;
+      }
+    } else if (tag == 0xA003 && meta->height <= 0) {
+      /* PixelYDimension (SHORT or LONG) */
+      int h = (type == 3) ? (int)read_u16(tiff_base + pos + 8, le)
+                          : (int)val_offset;
+      if (h > 0) {
+        meta->height = h;
+      }
     } else if (tag == 0xA403 && type == 3) {
       /* WhiteBalance (SHORT: 0 = Auto, 1 = Manual) */
       meta->wb_mode = read_u16(tiff_base + pos + 8, le);
@@ -532,6 +546,128 @@ static int get_grid_columns(PlayViewMode view_mode) {
   return 3; /* PLAY_VIEW_GRID_3X3 */
 }
 
+/*
+ * Fast-path thumbnail loader: reads only the JPEG header (up to ~66 KB),
+ * locates the embedded Exif 2.3 IFD1 JPEG thumbnail (tags 0x0201 / 0x0202),
+ * and decodes it from memory without reading or decoding the full-resolution
+ * primary image. Returns NULL if no embedded thumbnail is present.
+ */
+static SDL_Surface *load_exif_thumbnail_surface(const char *filepath) {
+  if (!filepath || filepath[0] == '\0') {
+    return NULL;
+  }
+
+  FILE *fp = fopen(filepath, "rb");
+  if (!fp) {
+    return NULL;
+  }
+
+  const size_t buf_cap = 66560U;
+  uint8_t *buf = (uint8_t *)malloc(buf_cap);
+  if (!buf) {
+    fclose(fp);
+    return NULL;
+  }
+
+  size_t nread = fread(buf, 1, buf_cap, fp);
+  fclose(fp);
+
+  SDL_Surface *thumb_surf = NULL;
+
+  if (nread >= 4 && buf[0] == 0xFF && buf[1] == 0xD8) {
+    size_t pos = 2;
+    while (pos + 4 <= nread) {
+      if (buf[pos] != 0xFF) {
+        pos++;
+        continue;
+      }
+      while (pos < nread && buf[pos] == 0xFF) {
+        pos++;
+      }
+      if (pos >= nread) {
+        break;
+      }
+      uint8_t marker = buf[pos++];
+      if (marker == 0xD9 || marker == 0xDA) {
+        /* EOI or SOS (Start of Scan): metadata headers end here */
+        break;
+      }
+      if (pos + 2 > nread) {
+        break;
+      }
+      uint16_t seg_len = ((uint16_t)buf[pos] << 8) | (uint16_t)buf[pos + 1];
+      if (seg_len < 2 || pos + seg_len > nread) {
+        break;
+      }
+
+      const uint8_t *seg_data = buf + pos + 2;
+      size_t seg_payload_len = seg_len - 2;
+
+      if (marker == 0xE1 && seg_payload_len > 14 &&
+          memcmp(seg_data, "Exif\0\0", 6) == 0) {
+        const uint8_t *tiff_base = seg_data + 6;
+        size_t tiff_len = seg_payload_len - 6;
+        bool le = (tiff_base[0] == 'I' && tiff_base[1] == 'I');
+        bool be = (tiff_base[0] == 'M' && tiff_base[1] == 'M');
+        if ((le || be) && read_u16(tiff_base + 2, le) == 0x002A) {
+          uint32_t ifd0_off = read_u32(tiff_base + 4, le);
+          if ((size_t)ifd0_off + 2 <= tiff_len) {
+            uint16_t ifd0_count = read_u16(tiff_base + ifd0_off, le);
+            size_t ifd1_ptr_off =
+                (size_t)ifd0_off + 2 + (size_t)ifd0_count * 12;
+            if (ifd1_ptr_off + 4 <= tiff_len) {
+              uint32_t ifd1_off = read_u32(tiff_base + ifd1_ptr_off, le);
+              if (ifd1_off > 0 && (size_t)ifd1_off + 2 <= tiff_len) {
+                uint16_t ifd1_count = read_u16(tiff_base + ifd1_off, le);
+                size_t epos = (size_t)ifd1_off + 2;
+                uint32_t thumb_off = 0;
+                uint32_t thumb_len = 0;
+
+                for (uint16_t i = 0; i < ifd1_count; ++i, epos += 12) {
+                  if (epos + 12 > tiff_len) {
+                    break;
+                  }
+                  uint16_t tag = read_u16(tiff_base + epos, le);
+                  uint16_t type = read_u16(tiff_base + epos + 2, le);
+                  uint32_t val =
+                      (type == 3) ? (uint32_t)read_u16(tiff_base + epos + 8, le)
+                                  : read_u32(tiff_base + epos + 8, le);
+                  if (tag == 0x0201) {
+                    /* JPEGInterchangeFormat (thumbnail offset in TIFF) */
+                    thumb_off = val;
+                  } else if (tag == 0x0202) {
+                    /* JPEGInterchangeFormatLength (thumbnail byte size) */
+                    thumb_len = val;
+                  }
+                }
+
+                if (thumb_off > 0 && thumb_len >= 4 &&
+                    (size_t)thumb_off + (size_t)thumb_len <= tiff_len &&
+                    tiff_base[thumb_off] == 0xFF &&
+                    tiff_base[thumb_off + 1] == 0xD8) {
+                  SDL_RWops *rw =
+                      SDL_RWFromConstMem(tiff_base + thumb_off, (int)thumb_len);
+                  if (rw) {
+                    thumb_surf = IMG_Load_RW(rw, 1);
+                    if (thumb_surf) {
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      pos += seg_len;
+    }
+  }
+
+  free(buf);
+  return thumb_surf;
+}
+
 static void ensure_grid_page_loaded(PlaybackManager *pm,
                                     SDL_Renderer *renderer) {
   if (!pm || !renderer || pm->media_list.count == 0 || pm->current_index < 0) {
@@ -556,7 +692,11 @@ static void ensure_grid_page_loaded(PlaybackManager *pm,
       break;
     }
     const char *path = pm->media_list.entries[media_idx].filepath;
-    SDL_Surface *surf = IMG_Load(path);
+    /* Try embedded Exif IFD1 thumbnail first; fallback to full JPEG decode */
+    SDL_Surface *surf = load_exif_thumbnail_surface(path);
+    if (!surf) {
+      surf = IMG_Load(path);
+    }
     if (!surf) {
       continue;
     }
