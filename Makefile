@@ -13,6 +13,7 @@ BUILD_DIR ?= build
 C_SRCS = src/main.c \
          src/text_renderer.c \
          src/dcf_storage.c \
+         src/live_ui.c \
          src/playback_manager.c \
          src/exif_writer.c \
          src/async_save_queue.c
