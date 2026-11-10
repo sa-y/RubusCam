@@ -25,34 +25,6 @@ static void signal_handler(int signum) {
   g_running = 0;
 }
 
-static void calculate_viewport_rect(int src_w, int src_h, int win_w, int win_h,
-                                    SDL_Rect *out_rect) {
-  if (src_w <= 0 || src_h <= 0 || win_w <= 0 || win_h <= 0) {
-    out_rect->x = 0;
-    out_rect->y = 0;
-    out_rect->w = win_w;
-    out_rect->h = win_h;
-    return;
-  }
-
-  float src_aspect = (float)src_w / (float)src_h;
-  float win_aspect = (float)win_w / (float)win_h;
-
-  if (win_aspect > src_aspect) {
-    // Window is wider than camera: add black bars on left/right (pillarbox)
-    out_rect->h = win_h;
-    out_rect->w = (int)((float)win_h * src_aspect + 0.5f);
-    out_rect->x = (win_w - out_rect->w) / 2;
-    out_rect->y = 0;
-  } else {
-    // Window is taller than camera: add black bars on top/bottom (letterbox)
-    out_rect->w = win_w;
-    out_rect->h = (int)((float)win_w / src_aspect + 0.5f);
-    out_rect->x = 0;
-    out_rect->y = (win_h - out_rect->h) / 2;
-  }
-}
-
 static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
                             int width, int height, int stride, bool is_bgr,
                             int jpeg_quality, const ExifMetadata *exif) {
@@ -483,7 +455,8 @@ int main(int argc, char *argv[]) {
       }
 
       // 5. Render camera frame with aspect-ratio preserving viewport
-      calculate_viewport_rect(cam_width, cam_height, cur_win_w, cur_win_h,
+      SDL_Rect win_bounds = {0, 0, cur_win_w, cur_win_h};
+      ui_calc_aspect_fit_rect(cam_width, cam_height, &win_bounds,
                               &live_ui.viewport_rect);
 
       SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);

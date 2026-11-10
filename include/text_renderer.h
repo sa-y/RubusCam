@@ -2,12 +2,11 @@
 #define TEXT_RENDERER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
-
-#include "camera_stream.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,22 +25,17 @@ bool text_renderer_init(const char *font_path, int font_size);
 void text_renderer_destroy(void);
 
 /*
- * Draw the overlay guide bar matching the pycamera GUI using GPU acceleration.
- * Renders a semi-transparent dark background bar and white guide text.
+ * Format exposure time in microseconds into a human-readable shutter speed
+ * string (e.g. "1/250s", "1.0s", "---").
  */
-void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported);
+void ui_format_shutter_speed(int32_t exposure_us, char *buf, size_t buf_size);
 
 /*
- * Draw the exposure status HUD bar at the bottom-left of the screen.
- * Displays current shutter speed, ISO sensitivity, EV compensation, JPEG
- * quality preset label, and background save queue indicator.
- * Uses texture caching to avoid re-rasterizing unchanged text strings.
+ * Calculate an aspect-ratio preserving destination rectangle centered inside
+ * bounds (letterbox / pillarbox).
  */
-void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
-                                     int win_h,
-                                     const CameraExposureStatus *status,
-                                     const char *quality_label,
-                                     int pending_saves);
+void ui_calc_aspect_fit_rect(int src_w, int src_h, const SDL_Rect *bounds,
+                             SDL_Rect *out_rect);
 
 /*
  * Measure the pixel width and height of a UTF-8 string using the loaded font.

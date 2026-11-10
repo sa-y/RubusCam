@@ -50,30 +50,6 @@ static void free_grid_textures(PlaybackManager *pm) {
   pm->cached_grid_page = -1;
 }
 
-static void calculate_aspect_fit_rect(int src_w, int src_h,
-                                      const SDL_Rect *bounds,
-                                      SDL_Rect *out_rect) {
-  if (src_w <= 0 || src_h <= 0 || bounds->w <= 0 || bounds->h <= 0) {
-    *out_rect = *bounds;
-    return;
-  }
-
-  float src_aspect = (float)src_w / (float)src_h;
-  float dst_aspect = (float)bounds->w / (float)bounds->h;
-
-  if (dst_aspect > src_aspect) {
-    out_rect->h = bounds->h;
-    out_rect->w = (int)((float)bounds->h * src_aspect + 0.5f);
-    out_rect->x = bounds->x + (bounds->w - out_rect->w) / 2;
-    out_rect->y = bounds->y;
-  } else {
-    out_rect->w = bounds->w;
-    out_rect->h = (int)((float)bounds->w / src_aspect + 0.5f);
-    out_rect->x = bounds->x;
-    out_rect->y = bounds->y + (bounds->h - out_rect->h) / 2;
-  }
-}
-
 /*
  * Create a GPU texture from an SDL_Surface, automatically downscaling if the
  * surface exceeds the hardware renderer's max_texture_width/max_texture_height
@@ -450,24 +426,6 @@ static void record_capture_metadata(PlaybackManager *pm, const char *filepath,
     rec->exp_status = *exp_status;
   } else {
     memset(&rec->exp_status, 0, sizeof(rec->exp_status));
-  }
-}
-
-static void format_exposure_time(int32_t exposure_us, char *buf,
-                                 size_t buf_size) {
-  if (exposure_us <= 0) {
-    snprintf(buf, buf_size, "---");
-    return;
-  }
-  if (exposure_us >= 1000000) {
-    snprintf(buf, buf_size, "%.1fs", (double)exposure_us / 1000000.0);
-  } else {
-    int denom = (int)(1000000.0 / (double)exposure_us + 0.5);
-    if (denom <= 1) {
-      snprintf(buf, buf_size, "1.0s");
-    } else {
-      snprintf(buf, buf_size, "1/%ds", denom);
-    }
   }
 }
 
@@ -1882,8 +1840,8 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
                                int win_w, int win_h) {
   SDL_Rect screen_bounds = {0, 0, win_w, win_h};
   SDL_Rect viewport_rect;
-  calculate_aspect_fit_rect(pm->current_tex_w, pm->current_tex_h,
-                            &screen_bounds, &viewport_rect);
+  ui_calc_aspect_fit_rect(pm->current_tex_w, pm->current_tex_h, &screen_bounds,
+                          &viewport_rect);
   pm->pb_viewport_rect = viewport_rect;
 
   if (pm->current_texture && pm->current_tex_w > 0 && pm->current_tex_h > 0) {
@@ -2032,7 +1990,8 @@ static void render_single_view(PlaybackManager *pm, SDL_Renderer *renderer,
                                                  : "---");
 
     char ss_buf[32];
-    format_exposure_time(pm->current_meta.exposure_us, ss_buf, sizeof(ss_buf));
+    ui_format_shutter_speed(pm->current_meta.exposure_us, ss_buf,
+                            sizeof(ss_buf));
     char iso_buf[32];
     if (pm->current_meta.iso_value > 0) {
       snprintf(iso_buf, sizeof(iso_buf), "%d", pm->current_meta.iso_value);
@@ -2234,8 +2193,8 @@ static void render_grid_view(PlaybackManager *pm, SDL_Renderer *renderer,
       SDL_Rect inner_bounds = {cell_rect.x + 4, cell_rect.y + 4,
                                cell_rect.w - 8, cell_rect.h - 8};
       SDL_Rect fit_rect;
-      calculate_aspect_fit_rect(pm->grid_tex_w[i], pm->grid_tex_h[i],
-                                &inner_bounds, &fit_rect);
+      ui_calc_aspect_fit_rect(pm->grid_tex_w[i], pm->grid_tex_h[i],
+                              &inner_bounds, &fit_rect);
       SDL_RenderCopy(renderer, pm->grid_textures[i], NULL, &fit_rect);
     }
 
@@ -2361,8 +2320,8 @@ void playback_manager_render(PlaybackManager *pm, SDL_Renderer *renderer,
   if (pm->mode == APP_MODE_QUICK_REVIEW) {
     SDL_Rect screen_bounds = {0, 0, win_w, win_h};
     SDL_Rect viewport_rect;
-    calculate_aspect_fit_rect(pm->current_tex_w, pm->current_tex_h,
-                              &screen_bounds, &viewport_rect);
+    ui_calc_aspect_fit_rect(pm->current_tex_w, pm->current_tex_h,
+                            &screen_bounds, &viewport_rect);
     if (pm->current_texture) {
       SDL_RenderCopy(renderer, pm->current_texture, NULL, &viewport_rect);
     }

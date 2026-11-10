@@ -7,22 +7,6 @@
 static TTF_Font *g_font = NULL;
 static int g_font_size = 18;
 
-// Cached textures for guide overlays to avoid per-frame text surface
-// rasterization
-static SDL_Texture *g_guide_texture_af = NULL;
-static int g_guide_w_af = 0;
-static int g_guide_h_af = 0;
-
-static SDL_Texture *g_guide_texture_no_af = NULL;
-static int g_guide_w_no_af = 0;
-static int g_guide_h_no_af = 0;
-
-// Cached texture for exposure HUD overlay
-static SDL_Texture *g_hud_texture = NULL;
-static int g_hud_w = 0;
-static int g_hud_h = 0;
-static char g_last_hud_text[384] = {0};
-
 // LRU cache for general text & UI button textures to avoid per-frame
 // TTF_RenderUTF8_Blended + SDL_CreateTextureFromSurface overhead
 #define TEXT_CACHE_CAPACITY 96
@@ -104,28 +88,6 @@ bool text_renderer_init(const char *font_path, int font_size) {
 }
 
 void text_renderer_destroy(void) {
-  if (g_guide_texture_af) {
-    SDL_DestroyTexture(g_guide_texture_af);
-    g_guide_texture_af = NULL;
-    g_guide_w_af = 0;
-    g_guide_h_af = 0;
-  }
-
-  if (g_guide_texture_no_af) {
-    SDL_DestroyTexture(g_guide_texture_no_af);
-    g_guide_texture_no_af = NULL;
-    g_guide_w_no_af = 0;
-    g_guide_h_no_af = 0;
-  }
-
-  if (g_hud_texture) {
-    SDL_DestroyTexture(g_hud_texture);
-    g_hud_texture = NULL;
-    g_hud_w = 0;
-    g_hud_h = 0;
-    g_last_hud_text[0] = '\0';
-  }
-
   clear_text_cache();
 
   if (g_font) {
@@ -134,8 +96,10 @@ void text_renderer_destroy(void) {
   }
 }
 
-static void format_shutter_speed(int32_t exposure_us, char *buf,
-                                 size_t buf_size) {
+void ui_format_shutter_speed(int32_t exposure_us, char *buf, size_t buf_size) {
+  if (!buf || buf_size == 0) {
+    return;
+  }
   if (exposure_us <= 0) {
     snprintf(buf, buf_size, "---");
     return;
@@ -153,209 +117,33 @@ static void format_shutter_speed(int32_t exposure_us, char *buf,
   }
 }
 
-void text_renderer_draw_guide(SDL_Renderer *renderer, bool af_supported) {
-  if (!renderer) {
+void ui_calc_aspect_fit_rect(int src_w, int src_h, const SDL_Rect *bounds,
+                             SDL_Rect *out_rect) {
+  if (!out_rect) {
+    return;
+  }
+  if (!bounds) {
+    *out_rect = (SDL_Rect){0, 0, 0, 0};
+    return;
+  }
+  if (src_w <= 0 || src_h <= 0 || bounds->w <= 0 || bounds->h <= 0) {
+    *out_rect = *bounds;
     return;
   }
 
-  SDL_Texture **tex_slot =
-      af_supported ? &g_guide_texture_af : &g_guide_texture_no_af;
-  int *w_slot = af_supported ? &g_guide_w_af : &g_guide_w_no_af;
-  int *h_slot = af_supported ? &g_guide_h_af : &g_guide_h_no_af;
+  float src_aspect = (float)src_w / (float)src_h;
+  float dst_aspect = (float)bounds->w / (float)bounds->h;
 
-  const char *guide_text =
-      af_supported
-          ? "[SPACE]:Shot [P]:Play [F]:AF [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB "
-            "[K]:Temp [L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit"
-          : "[SPACE]:Shot [P]:Play [Up/Dn]:EV [I]:ISO [S]:SS [W]:WB [K]:Temp "
-            "[L]:Lock [M]:Met [J]:Qual [R]:Reset [Q]:Quit";
-
-  // Lazily create and cache guide text texture on GPU
-  if (!*tex_slot && g_font) {
-    SDL_Color white = {255, 255, 255, 255};
-    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, guide_text, white);
-    if (surf) {
-      *tex_slot = SDL_CreateTextureFromSurface(renderer, surf);
-      *w_slot = surf->w;
-      *h_slot = surf->h;
-      SDL_FreeSurface(surf);
-    }
-  }
-
-  int content_w = *w_slot > 0 ? *w_slot : 340;
-  int content_h = *h_slot > 0 ? *h_slot : 20;
-
-  int pad_x = 12;
-  int pad_y = 6;
-
-  SDL_Rect bg_rect;
-  bg_rect.x = 12;
-  bg_rect.y = 12;
-  bg_rect.w = content_w + pad_x * 2;
-  bg_rect.h = content_h + pad_y * 2;
-
-  // 1. Draw semi-transparent dark background bar
-  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
-  SDL_RenderFillRect(renderer, &bg_rect);
-
-  // 2. Draw border outline
-  SDL_SetRenderDrawColor(renderer, 255, 255, 255, 60);
-  SDL_RenderDrawRect(renderer, &bg_rect);
-
-  // 3. Render guide text texture
-  if (*tex_slot) {
-    SDL_Rect text_rect;
-    text_rect.x = bg_rect.x + pad_x;
-    text_rect.y = bg_rect.y + pad_y;
-    text_rect.w = *w_slot;
-    text_rect.h = *h_slot;
-    SDL_RenderCopy(renderer, *tex_slot, NULL, &text_rect);
-  }
-}
-
-void text_renderer_draw_exposure_hud(SDL_Renderer *renderer, int win_w,
-                                     int win_h,
-                                     const CameraExposureStatus *status,
-                                     const char *quality_label,
-                                     int pending_saves) {
-  (void)win_w;
-  if (!renderer || !status) {
-    return;
-  }
-
-  char ss_str[64];
-  if (status->shutter_us_setting > 0) {
-    char manual_ss[32];
-    format_shutter_speed(status->shutter_us_setting, manual_ss,
-                         sizeof(manual_ss));
-    snprintf(ss_str, sizeof(ss_str), "SS: %s [M]", manual_ss);
+  if (dst_aspect > src_aspect) {
+    out_rect->h = bounds->h;
+    out_rect->w = (int)((float)bounds->h * src_aspect + 0.5f);
+    out_rect->x = bounds->x + (bounds->w - out_rect->w) / 2;
+    out_rect->y = bounds->y;
   } else {
-    char auto_ss[32];
-    format_shutter_speed(status->actual_exposure_us, auto_ss, sizeof(auto_ss));
-    snprintf(ss_str, sizeof(ss_str), "SS: Auto (%s)", auto_ss);
-  }
-
-  char iso_str[64];
-  if (status->iso_setting > 0) {
-    snprintf(iso_str, sizeof(iso_str), "ISO: %d [M]", status->iso_setting);
-  } else {
-    int actual_iso = (int)(status->actual_analogue_gain * 100.0f + 0.5f);
-    if (actual_iso < 100) {
-      actual_iso = 100;
-    }
-    // Quantize display to 10s so tiny sensor gain jitter doesn't invalidate
-    // texture cache every frame
-    actual_iso = ((actual_iso + 5) / 10) * 10;
-    snprintf(iso_str, sizeof(iso_str), "ISO: Auto (%d)", actual_iso);
-  }
-
-  const char *q_str = (quality_label && quality_label[0] != '\0')
-                          ? quality_label
-                          : "Fine (90%)";
-
-  char wb_str[64];
-  int quant_k = status->actual_colour_temp_k > 0
-                    ? ((status->actual_colour_temp_k + 50) / 100) * 100
-                    : 5500;
-  if (status->awb_locked) {
-    snprintf(wb_str, sizeof(wb_str), "WB: LOCK (%dK)", quant_k);
-  } else {
-    switch (status->wb_mode) {
-    case CAMERA_WB_MODE_DAYLIGHT:
-      snprintf(wb_str, sizeof(wb_str), "WB: Daylight");
-      break;
-    case CAMERA_WB_MODE_CLOUDY:
-      snprintf(wb_str, sizeof(wb_str), "WB: Cloudy");
-      break;
-    case CAMERA_WB_MODE_SHADE:
-      snprintf(wb_str, sizeof(wb_str), "WB: Shade");
-      break;
-    case CAMERA_WB_MODE_TUNGSTEN:
-      snprintf(wb_str, sizeof(wb_str), "WB: Tungsten");
-      break;
-    case CAMERA_WB_MODE_FLUORESCENT:
-      snprintf(wb_str, sizeof(wb_str), "WB: Fluoresc");
-      break;
-    case CAMERA_WB_MODE_KELVIN: {
-      int k_val =
-          status->wb_kelvin_setting > 0 ? status->wb_kelvin_setting : 5500;
-      snprintf(wb_str, sizeof(wb_str), "WB: %dK [M]", k_val);
-      break;
-    }
-    case CAMERA_WB_MODE_AUTO:
-    default:
-      snprintf(wb_str, sizeof(wb_str), "WB: AWB (%dK)", quant_k);
-      break;
-    }
-  }
-
-  const char *met_str = "Met: Matrix";
-  switch (status->metering_mode) {
-  case CAMERA_METERING_CENTRE_WEIGHTED:
-    met_str = "Met: Center";
-    break;
-  case CAMERA_METERING_SPOT:
-    met_str = "Met: Spot";
-    break;
-  case CAMERA_METERING_MATRIX:
-  default:
-    met_str = "Met: Matrix";
-    break;
-  }
-
-  char save_str[48] = "";
-  if (pending_saves > 0) {
-    snprintf(save_str, sizeof(save_str), "  |  [Saving: %d]", pending_saves);
-  }
-
-  char hud_text[384];
-  snprintf(hud_text, sizeof(hud_text),
-           "%s  |  %s  |  EV: %+.1f  |  %s  |  %s  |  JPG: %s%s", ss_str,
-           iso_str, status->ev_compensation, wb_str, met_str, q_str, save_str);
-
-  // Re-rasterize only when text string changes
-  if (strcmp(hud_text, g_last_hud_text) != 0 && g_font) {
-    if (g_hud_texture) {
-      SDL_DestroyTexture(g_hud_texture);
-      g_hud_texture = NULL;
-    }
-    SDL_Color white = {255, 255, 255, 255};
-    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, hud_text, white);
-    if (surf) {
-      g_hud_texture = SDL_CreateTextureFromSurface(renderer, surf);
-      g_hud_w = surf->w;
-      g_hud_h = surf->h;
-      SDL_FreeSurface(surf);
-      snprintf(g_last_hud_text, sizeof(g_last_hud_text), "%s", hud_text);
-    }
-  }
-
-  int content_w = g_hud_w > 0 ? g_hud_w : 360;
-  int content_h = g_hud_h > 0 ? g_hud_h : 20;
-  int pad_x = 12;
-  int pad_y = 6;
-
-  SDL_Rect bg_rect;
-  bg_rect.x = 12;
-  bg_rect.y = win_h - (content_h + pad_y * 2) - 12;
-  bg_rect.w = content_w + pad_x * 2;
-  bg_rect.h = content_h + pad_y * 2;
-
-  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
-  SDL_RenderFillRect(renderer, &bg_rect);
-
-  SDL_SetRenderDrawColor(renderer, 255, 255, 255, 60);
-  SDL_RenderDrawRect(renderer, &bg_rect);
-
-  if (g_hud_texture) {
-    SDL_Rect text_rect;
-    text_rect.x = bg_rect.x + pad_x;
-    text_rect.y = bg_rect.y + pad_y;
-    text_rect.w = g_hud_w;
-    text_rect.h = g_hud_h;
-    SDL_RenderCopy(renderer, g_hud_texture, NULL, &text_rect);
+    out_rect->w = bounds->w;
+    out_rect->h = (int)((float)bounds->w / src_aspect + 0.5f);
+    out_rect->x = bounds->x;
+    out_rect->y = bounds->y + (bounds->h - out_rect->h) / 2;
   }
 }
 

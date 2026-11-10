@@ -75,6 +75,38 @@ static void get_current_date_str(char *out_buf, size_t buf_size) {
   strftime(out_buf, buf_size, "%Y%m%d", &tm_buf);
 }
 
+static bool has_jpeg_extension(const char *name) {
+  if (!name) {
+    return false;
+  }
+  const char *dot = strrchr(name, '.');
+  if (!dot) {
+    return false;
+  }
+  if (toupper((unsigned char)dot[1]) == 'J' &&
+      toupper((unsigned char)dot[2]) == 'P' &&
+      toupper((unsigned char)dot[3]) == 'G' && dot[4] == '\0') {
+    return true;
+  }
+  if (toupper((unsigned char)dot[1]) == 'J' &&
+      toupper((unsigned char)dot[2]) == 'P' &&
+      toupper((unsigned char)dot[3]) == 'E' &&
+      toupper((unsigned char)dot[4]) == 'G' && dot[5] == '\0') {
+    return true;
+  }
+  return false;
+}
+
+static void format_active_dir_path(const DcfStorage *dcf, char *out_dir,
+                                   size_t out_size) {
+  if (dcf->mode == DCF_DIR_MODE_STANDARD) {
+    snprintf(out_dir, out_size, "%s/%03d%s", dcf->base_path,
+             dcf->current_dir_num, dcf->dir_suffix);
+  } else {
+    snprintf(out_dir, out_size, "%s/%s", dcf->base_path, dcf->current_date_str);
+  }
+}
+
 /*
  * Parse a DCF file name matching "<prefix><4-digit-number>.JPG"
  * (case-insensitive). Returns the 1..9999 file number if matched, or -1
@@ -94,23 +126,14 @@ static int parse_dcf_filename(const char *name, const char *prefix) {
   }
 
   const char *ext = digits + 4;
-  if (ext[0] != '.') {
+  if (ext[0] != '.' || !has_jpeg_extension(ext)) {
     return -1;
   }
 
-  /* Match .JPG or .JPEG (case-insensitive) */
-  if ((toupper((unsigned char)ext[1]) == 'J' &&
-       toupper((unsigned char)ext[2]) == 'P' &&
-       toupper((unsigned char)ext[3]) == 'G' && ext[4] == '\0') ||
-      (toupper((unsigned char)ext[1]) == 'J' &&
-       toupper((unsigned char)ext[2]) == 'P' &&
-       toupper((unsigned char)ext[3]) == 'E' &&
-       toupper((unsigned char)ext[4]) == 'G' && ext[5] == '\0')) {
-    int num = (digits[0] - '0') * 1000 + (digits[1] - '0') * 100 +
-              (digits[2] - '0') * 10 + (digits[3] - '0');
-    if (num >= DCF_FILE_MIN && num <= DCF_FILE_MAX) {
-      return num;
-    }
+  int num = (digits[0] - '0') * 1000 + (digits[1] - '0') * 100 +
+            (digits[2] - '0') * 10 + (digits[3] - '0');
+  if (num >= DCF_FILE_MIN && num <= DCF_FILE_MAX) {
+    return num;
   }
 
   return -1;
@@ -202,28 +225,7 @@ bool dcf_storage_init(DcfStorage *dcf, const char *base_path, DcfDirMode mode) {
   dcf->current_file_num = 0;
 
   get_current_date_str(dcf->current_date_str, sizeof(dcf->current_date_str));
-
-  if (is_directory(dcf->base_path)) {
-    if (dcf->mode == DCF_DIR_MODE_STANDARD) {
-      dcf->current_dir_num =
-          scan_max_dir_number(dcf->base_path, dcf->dir_suffix);
-      char active_dir[512];
-      snprintf(active_dir, sizeof(active_dir), "%s/%03d%s", dcf->base_path,
-               dcf->current_dir_num, dcf->dir_suffix);
-      if (is_directory(active_dir)) {
-        dcf->current_file_num =
-            scan_max_file_number(active_dir, dcf->file_prefix);
-      }
-    } else {
-      char date_dir[512];
-      snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path,
-               dcf->current_date_str);
-      if (is_directory(date_dir)) {
-        dcf->current_file_num =
-            scan_max_file_number(date_dir, dcf->file_prefix);
-      }
-    }
-  }
+  dcf_storage_resync(dcf);
 
   return true;
 }
@@ -284,8 +286,7 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path,
       snprintf(dcf->current_date_str, sizeof(dcf->current_date_str), "%s",
                today);
       char date_dir[512];
-      snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path,
-               dcf->current_date_str);
+      format_active_dir_path(dcf, date_dir, sizeof(date_dir));
       dcf->current_file_num =
           is_directory(date_dir)
               ? scan_max_file_number(date_dir, dcf->file_prefix)
@@ -319,13 +320,7 @@ bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path,
     }
 
     char dir_path[512];
-    if (dcf->mode == DCF_DIR_MODE_STANDARD) {
-      snprintf(dir_path, sizeof(dir_path), "%s/%03d%s", dcf->base_path,
-               dcf->current_dir_num, dcf->dir_suffix);
-    } else {
-      snprintf(dir_path, sizeof(dir_path), "%s/%s", dcf->base_path,
-               dcf->current_date_str);
-    }
+    format_active_dir_path(dcf, dir_path, sizeof(dir_path));
 
     if (!ensure_directory_exists(dir_path)) {
       fprintf(stderr, "[エラー] 保存先ディレクトリの作成に失敗しました: %s\n",
@@ -364,6 +359,9 @@ void dcf_storage_resync(DcfStorage *dcf) {
 
   dcf->current_dir_num = DCF_DIR_MIN;
   dcf->current_file_num = 0;
+  if (dcf->mode == DCF_DIR_MODE_DATE) {
+    get_current_date_str(dcf->current_date_str, sizeof(dcf->current_date_str));
+  }
 
   if (!is_directory(dcf->base_path)) {
     return;
@@ -371,44 +369,13 @@ void dcf_storage_resync(DcfStorage *dcf) {
 
   if (dcf->mode == DCF_DIR_MODE_STANDARD) {
     dcf->current_dir_num = scan_max_dir_number(dcf->base_path, dcf->dir_suffix);
-    char active_dir[512];
-    snprintf(active_dir, sizeof(active_dir), "%s/%03d%s", dcf->base_path,
-             dcf->current_dir_num, dcf->dir_suffix);
-    if (is_directory(active_dir)) {
-      dcf->current_file_num =
-          scan_max_file_number(active_dir, dcf->file_prefix);
-    }
-  } else {
-    get_current_date_str(dcf->current_date_str, sizeof(dcf->current_date_str));
-    char date_dir[512];
-    snprintf(date_dir, sizeof(date_dir), "%s/%s", dcf->base_path,
-             dcf->current_date_str);
-    if (is_directory(date_dir)) {
-      dcf->current_file_num = scan_max_file_number(date_dir, dcf->file_prefix);
-    }
   }
-}
 
-static bool has_jpeg_extension(const char *name) {
-  if (!name) {
-    return false;
+  char active_dir[512];
+  format_active_dir_path(dcf, active_dir, sizeof(active_dir));
+  if (is_directory(active_dir)) {
+    dcf->current_file_num = scan_max_file_number(active_dir, dcf->file_prefix);
   }
-  const char *dot = strrchr(name, '.');
-  if (!dot) {
-    return false;
-  }
-  if (toupper((unsigned char)dot[1]) == 'J' &&
-      toupper((unsigned char)dot[2]) == 'P' &&
-      toupper((unsigned char)dot[3]) == 'G' && dot[4] == '\0') {
-    return true;
-  }
-  if (toupper((unsigned char)dot[1]) == 'J' &&
-      toupper((unsigned char)dot[2]) == 'P' &&
-      toupper((unsigned char)dot[3]) == 'E' &&
-      toupper((unsigned char)dot[4]) == 'G' && dot[5] == '\0') {
-    return true;
-  }
-  return false;
 }
 
 static bool media_list_push(DcfMediaList *list, const DcfMediaEntry *entry) {

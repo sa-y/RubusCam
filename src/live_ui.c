@@ -71,23 +71,6 @@ static const MeteringPreset METERING_PRESETS[] = {
 static const int METERING_PRESET_COUNT =
     (int)(sizeof(METERING_PRESETS) / sizeof(METERING_PRESETS[0]));
 
-static void format_ss_short(int32_t exposure_us, char *buf, size_t buf_size) {
-  if (exposure_us <= 0) {
-    snprintf(buf, buf_size, "---");
-    return;
-  }
-  if (exposure_us >= 1000000) {
-    snprintf(buf, buf_size, "%.1fs", (double)exposure_us / 1000000.0);
-  } else {
-    int denom = (int)(1000000.0 / (double)exposure_us + 0.5);
-    if (denom <= 1) {
-      snprintf(buf, buf_size, "1.0s");
-    } else {
-      snprintf(buf, buf_size, "1/%ds", denom);
-    }
-  }
-}
-
 static bool live_btn_hovered(const LiveUiController *ui, const SDL_Rect *r) {
   return ui && ui_rect_contains(r, ui->pointer_x, ui->pointer_y);
 }
@@ -830,11 +813,11 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
   char ss_str[48];
   if (status->shutter_us_setting > 0) {
     char m_ss[24];
-    format_ss_short(status->shutter_us_setting, m_ss, sizeof(m_ss));
+    ui_format_shutter_speed(status->shutter_us_setting, m_ss, sizeof(m_ss));
     snprintf(ss_str, sizeof(ss_str), "SS:%s[M]", m_ss);
   } else {
     char a_ss[24];
-    format_ss_short(status->actual_exposure_us, a_ss, sizeof(a_ss));
+    ui_format_shutter_speed(status->actual_exposure_us, a_ss, sizeof(a_ss));
     snprintf(ss_str, sizeof(ss_str), "SS:Auto(%s)", a_ss);
   }
   int w_ss = calc_button_width(ss_str, bw);
