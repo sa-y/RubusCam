@@ -185,16 +185,18 @@ RubusCam/
 │   ├── camera_stream.h        # libcamera ラッパー関数の C 向け公開ヘッダー (extern "C")
 │   ├── dcf_storage.h          # DCF 準拠ディレクトリ・連番ファイル管理・残容量確認・メディア走査ヘッダー
 │   ├── exif_writer.h          # Exif 2.3 (APP1) セグメント生成・JPEG 注入ヘッダー
+│   ├── live_ui.h              # ライブビュー撮影 UI・ポップアップ設定・タッチAF管理ヘッダー
 │   ├── playback_manager.h     # クイックレビュー・再生ギャラリー・ズーム/グリッド/削除管理ヘッダー
-│   └── text_renderer.h        # SDL2_ttf 用テキスト・HUD・パネル描画関数宣言
+│   └── text_renderer.h        # SDL2_ttf 用テキスト・ボタン・パネル描画 & 共通UIユーティリティ宣言
 └── src/
     ├── main.c                 # アプリケーションエントリポイント & SDL2 イベント/レンダリングループ (C言語)
     ├── async_save_queue.c     # 非同期保存ワーカースレッド & キュー管理実装 (C言語)
     ├── camera_stream.cpp      # libcamera 制御実装 & extern "C" ラッパー関数群 (C++)
     ├── dcf_storage.c          # DCF フォルダ自動生成・連番採番・statvfs 残容量チェック・ファイル削除/保護実装 (C言語)
     ├── exif_writer.c          # TIFF IFD / Exif 2.3 バイナリ構築 & アトミック保存実装 (C言語)
+    ├── live_ui.c              # ライブビュー撮影 UI・設定カラム/ポップアップ・タッチAF制御実装 (C言語)
     ├── playback_manager.c     # 再生モード・クイックレビュー・Exif パーサ・サムネイル一覧実装 (C言語)
-    └── text_renderer.c        # SDL2_ttf ガイド・露出 HUD オーバーレイ描画実装 (C言語)
+    └── text_renderer.c        # SDL2_ttf テキストキャッシュ・ボタン・パネル描画実装 (C言語)
 ```
 
 ---
@@ -236,9 +238,8 @@ bool camera_stream_set_metering_mode(CameraStream *cam, CameraMeteringMode mode)
 void camera_stream_get_exposure_status(const CameraStream *cam, CameraExposureStatus *out_status);
 
 bool camera_stream_trigger_af(CameraStream *cam);
-
-typedef bool (*CameraStillSaveCallback)(const char *filename, const uint8_t *data, int width, int height, int stride, bool is_bgr);
-bool camera_stream_capture_still(CameraStream *cam, const char *filename, CameraStillSaveCallback save_cb);
+bool camera_stream_trigger_touch_af(CameraStream *cam, float norm_x, float norm_y);
+CameraAfStatus camera_stream_get_af_status(const CameraStream *cam);
 
 bool camera_stream_request_still(CameraStream *cam);
 bool camera_stream_is_still_pending(const CameraStream *cam);
@@ -252,8 +253,8 @@ bool camera_stream_poll_captured_still(CameraStream *cam, CameraCapturedStill *o
 解像度を変更したい場合は、[`src/main.c`](src/main.c) 内の以下の値を変更して再ビルドしてください。
 
 ```c
-const int screen_width = 1024;
-const int screen_height = 600;
+const int screen_width = 800;
+const int screen_height = 480;
 ```
 
 フレームレートを調整する場合は、メインループ内の `target_frame_time_ms`（デフォルト: `1000 / 30`）を変更します。

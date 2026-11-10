@@ -83,6 +83,15 @@ bool async_save_queue_push(AsyncSaveQueue *q, const char *filepath,
                            int jpeg_quality, const ExifMetadata *exif);
 
 /*
+ * Synchronously encode a raw RGB24/BGR24 image buffer to JPEG in memory,
+ * generate an Exif 2.3 IFD1 thumbnail, and write the complete file atomically
+ * to disk. Does not take ownership of `raw_data`.
+ */
+bool async_save_queue_save_sync(const char *filepath, const uint8_t *raw_data,
+                                int width, int height, int stride, bool is_bgr,
+                                int jpeg_quality, const ExifMetadata *exif);
+
+/*
  * Return the total number of save tasks currently queued or being written.
  */
 int async_save_queue_get_pending_count(AsyncSaveQueue *q);

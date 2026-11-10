@@ -310,6 +310,31 @@ static bool encode_and_save_job(const AsyncSaveJob *job) {
   return ok;
 }
 
+bool async_save_queue_save_sync(const char *filepath, const uint8_t *raw_data,
+                                int width, int height, int stride, bool is_bgr,
+                                int jpeg_quality, const ExifMetadata *exif) {
+  if (!filepath || filepath[0] == '\0' || !raw_data || width <= 0 ||
+      height <= 0) {
+    return false;
+  }
+
+  AsyncSaveJob job;
+  memset(&job, 0, sizeof(job));
+  job.valid = true;
+  snprintf(job.filepath, sizeof(job.filepath), "%s", filepath);
+  job.raw_data = (uint8_t *)raw_data;
+  job.width = width;
+  job.height = height;
+  job.stride = stride;
+  job.is_bgr = is_bgr;
+  job.jpeg_quality = jpeg_quality;
+  if (exif) {
+    job.exif = *exif;
+  }
+
+  return encode_and_save_job(&job);
+}
+
 static void *save_worker_thread_main(void *arg) {
   AsyncSaveQueue *q = (AsyncSaveQueue *)arg;
 

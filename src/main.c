@@ -25,43 +25,179 @@ static void signal_handler(int signum) {
   g_running = 0;
 }
 
-static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
-                            int width, int height, int stride, bool is_bgr,
-                            int jpeg_quality, const ExifMetadata *exif) {
-  if (!filename || !src_data || width <= 0 || height <= 0) {
-    return false;
+static void show_mouse_cursor(LiveUiController *live_ui, uint32_t now_ms) {
+  if (!live_ui->cursor_visible) {
+    SDL_ShowCursor(SDL_ENABLE);
+    live_ui->cursor_visible = true;
+  }
+  live_ui->last_mouse_move_ms = now_ms;
+}
+
+static void dispatch_pointer_down(LiveUiController *live_ui,
+                                  PlaybackManager *playback_mgr,
+                                  CameraStream *camera, SDL_Renderer *renderer,
+                                  int x, int y, uint8_t button) {
+  if (playback_manager_get_mode(playback_mgr) != APP_MODE_LIVE) {
+    if (button == SDL_BUTTON_LEFT) {
+      playback_manager_handle_pointer_down(playback_mgr, renderer, x, y);
+    }
+  } else {
+    live_ui_handle_pointer_down(live_ui, camera, x, y, button);
+  }
+}
+
+static void dispatch_pointer_move(LiveUiController *live_ui,
+                                  PlaybackManager *playback_mgr,
+                                  SDL_Renderer *renderer, int x, int y) {
+  live_ui_handle_pointer_move(live_ui, x, y);
+  if (playback_manager_get_mode(playback_mgr) != APP_MODE_LIVE) {
+    playback_manager_handle_pointer_move(playback_mgr, renderer, x, y);
+  }
+}
+
+static void dispatch_pointer_up(LiveUiController *live_ui,
+                                PlaybackManager *playback_mgr,
+                                CameraStream *camera,
+                                AsyncSaveQueue *save_queue,
+                                SDL_Renderer *renderer, int x, int y) {
+  if (playback_manager_get_mode(playback_mgr) != APP_MODE_LIVE) {
+    playback_manager_handle_pointer_up(playback_mgr, renderer, x, y);
+  } else {
+    live_ui_handle_pointer_up(live_ui, camera, playback_mgr, save_queue,
+                              renderer, x, y);
+  }
+}
+
+static void process_sdl_event(const SDL_Event *event, uint32_t frame_start,
+                              int cur_win_w, int cur_win_h,
+                              LiveUiController *live_ui,
+                              PlaybackManager *playback_mgr,
+                              CameraStream *camera, AsyncSaveQueue *save_queue,
+                              SDL_Renderer *renderer) {
+  switch (event->type) {
+  case SDL_QUIT:
+    g_running = 0;
+    break;
+
+  case SDL_KEYDOWN:
+    if (event->key.keysym.sym == SDLK_q) {
+      g_running = 0;
+      return;
+    }
+    if (playback_manager_get_mode(playback_mgr) != APP_MODE_LIVE) {
+      playback_manager_handle_key(playback_mgr, renderer, &event->key);
+    } else {
+      live_ui_handle_key(live_ui, camera, playback_mgr, save_queue, renderer,
+                         &event->key);
+    }
+    break;
+
+  case SDL_MOUSEBUTTONDOWN:
+    if (event->button.which == SDL_TOUCH_MOUSEID) {
+      return; /* Handled via SDL_FINGERDOWN to avoid duplicate events */
+    }
+    show_mouse_cursor(live_ui, frame_start);
+    dispatch_pointer_down(live_ui, playback_mgr, camera, renderer,
+                          event->button.x, event->button.y,
+                          event->button.button);
+    break;
+
+  case SDL_MOUSEMOTION:
+    if (event->motion.which == SDL_TOUCH_MOUSEID) {
+      return;
+    }
+    show_mouse_cursor(live_ui, frame_start);
+    dispatch_pointer_move(live_ui, playback_mgr, renderer, event->motion.x,
+                          event->motion.y);
+    break;
+
+  case SDL_MOUSEBUTTONUP:
+    if (event->button.which == SDL_TOUCH_MOUSEID) {
+      return;
+    }
+    live_ui->last_mouse_move_ms = frame_start;
+    if (event->button.button == SDL_BUTTON_LEFT) {
+      dispatch_pointer_up(live_ui, playback_mgr, camera, save_queue, renderer,
+                          event->button.x, event->button.y);
+    }
+    break;
+
+  case SDL_MOUSEWHEEL: {
+    if (event->wheel.which == SDL_TOUCH_MOUSEID || event->wheel.y == 0) {
+      return;
+    }
+    show_mouse_cursor(live_ui, frame_start);
+    int wy = event->wheel.y;
+    if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+      wy = -wy;
+    }
+    int mx = live_ui->pointer_x >= 0 ? live_ui->pointer_x : (cur_win_w / 2);
+    int my = live_ui->pointer_y >= 0 ? live_ui->pointer_y : (cur_win_h / 2);
+    if (playback_manager_get_mode(playback_mgr) != APP_MODE_LIVE) {
+      playback_manager_handle_wheel(playback_mgr, renderer, wy, mx, my);
+    } else {
+      live_ui_handle_wheel(live_ui, camera, wy, mx, my);
+    }
+    break;
   }
 
-  int effective_stride = stride > 0 ? stride : (width * 3);
-  Uint32 format = is_bgr ? SDL_PIXELFORMAT_BGR24 : SDL_PIXELFORMAT_RGB24;
-
-  SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
-      (void *)src_data, width, height, 24, effective_stride, format);
-  if (!surface) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                 "%s: %d: JPEG保存用サーフェスの作成に失敗しました : %s",
-                 __FILE__, __LINE__, SDL_GetError());
-    return false;
+  case SDL_FINGERDOWN: {
+    if (live_ui->cursor_visible) {
+      SDL_ShowCursor(SDL_DISABLE);
+      live_ui->cursor_visible = false;
+    }
+    int tx = (int)(event->tfinger.x * (float)cur_win_w);
+    int ty = (int)(event->tfinger.y * (float)cur_win_h);
+    dispatch_pointer_down(live_ui, playback_mgr, camera, renderer, tx, ty,
+                          SDL_BUTTON_LEFT);
+    break;
   }
 
-  const int quality =
-      (jpeg_quality > 0 && jpeg_quality <= 100) ? jpeg_quality : 90;
-  int ret = IMG_SaveJPG(surface, filename, quality);
-  if (ret != 0) {
-    fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",
-            IMG_GetError());
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                 "%s: %d: IMG_SaveJPG による保存に失敗しました: %s", __FILE__,
-                 __LINE__, SDL_GetError());
-  } else if (exif) {
-    exif_inject_into_jpeg_file(filename, exif);
+  case SDL_FINGERMOTION: {
+    int tx = (int)(event->tfinger.x * (float)cur_win_w);
+    int ty = (int)(event->tfinger.y * (float)cur_win_h);
+    dispatch_pointer_move(live_ui, playback_mgr, renderer, tx, ty);
+    break;
   }
 
-  SDL_FreeSurface(surface);
-  return ret == 0;
+  case SDL_FINGERUP: {
+    int tx = (int)(event->tfinger.x * (float)cur_win_w);
+    int ty = (int)(event->tfinger.y * (float)cur_win_h);
+    dispatch_pointer_up(live_ui, playback_mgr, camera, save_queue, renderer, tx,
+                        ty);
+    /* Clear hover state after touch release so touch buttons don't stay
+     * hovered */
+    live_ui->pointer_x = -1;
+    live_ui->pointer_y = -1;
+    playback_mgr->pointer_x = -1;
+    playback_mgr->pointer_y = -1;
+    break;
+  }
+
+  default:
+    break;
+  }
+
+  if (live_ui_is_quit_requested(live_ui)) {
+    g_running = 0;
+  }
 }
 
 int main(int argc, char *argv[]) {
+  int exit_code = 0;
+  bool sdl_inited = false;
+  bool img_inited = false;
+  bool ttf_inited = false;
+  SDL_Window *window = NULL;
+  SDL_Renderer *renderer = NULL;
+  SDL_Texture *camera_texture = NULL;
+  CameraStream *camera = NULL;
+  uint8_t *frame_buffer = NULL;
+  AsyncSaveQueue save_queue;
+  memset(&save_queue, 0, sizeof(save_queue));
+  PlaybackManager playback_mgr;
+  memset(&playback_mgr, 0, sizeof(playback_mgr));
+  bool playback_inited = false;
 
   SDL_LogPriority log_priority = SDL_LOG_PRIORITY_INFO;
   DcfDirMode dcf_mode = DCF_DIR_MODE_STANDARD;
@@ -82,23 +218,25 @@ int main(int argc, char *argv[]) {
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: SDL_Init() fail : %s",
                  __FILE__, __LINE__, SDL_GetError());
-    exit(1);
+    return 1;
   }
-  atexit(SDL_Quit);
+  sdl_inited = true;
 
   if ((IMG_Init(IMG_INIT_JPG) & IMG_INIT_JPG) != IMG_INIT_JPG) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: IMG_Init() fail : %s",
                  __FILE__, __LINE__, IMG_GetError());
-    exit(2);
+    exit_code = 2;
+    goto cleanup;
   }
-  atexit(IMG_Quit);
+  img_inited = true;
 
   if (TTF_Init() < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: TTF_Init() fail : %s",
                  __FILE__, __LINE__, TTF_GetError());
-    exit(3);
+    exit_code = 3;
+    goto cleanup;
   }
-  atexit(TTF_Quit);
+  ttf_inited = true;
 
   // Initialize DCF storage manager (DCIM/100_PICA/IMG_0001.JPG or
   // DCIM/YYYYMMDD/IMG_0001.JPG)
@@ -115,15 +253,16 @@ int main(int argc, char *argv[]) {
   const int screen_width = 800;
   const int screen_height = 480;
 
-  SDL_Window *window = SDL_CreateWindow(
-      "RubusCam", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, screen_width,
-      screen_height,
-      SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+  window = SDL_CreateWindow("RubusCam", SDL_WINDOWPOS_CENTERED,
+                            SDL_WINDOWPOS_CENTERED, screen_width, screen_height,
+                            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+                                SDL_WINDOW_ALLOW_HIGHDPI);
   if (!window) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                  "%s: %d: SDL_CreateWindow() fail : %s", __FILE__, __LINE__,
                  SDL_GetError());
-    exit(4);
+    exit_code = 4;
+    goto cleanup;
   }
 
   int cur_win_w = screen_width;
@@ -134,7 +273,7 @@ int main(int argc, char *argv[]) {
 
   // Attempt hardware accelerated renderer with VSync, fallback to default if
   // failed
-  SDL_Renderer *renderer = SDL_CreateRenderer(
+  renderer = SDL_CreateRenderer(
       window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   if (!renderer) {
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -152,8 +291,8 @@ int main(int argc, char *argv[]) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                  "%s: %d: レンダラーの作成に失敗しました : %s", __FILE__,
                  __LINE__, SDL_GetError());
-    SDL_DestroyWindow(window);
-    exit(5);
+    exit_code = 5;
+    goto cleanup;
   }
 
   // Initialize text renderer using SDL2_ttf
@@ -167,46 +306,34 @@ int main(int argc, char *argv[]) {
               __FILE__, __LINE__);
 
   // 2. Initialize CameraStream (libcamera via C wrapper)
-  CameraStream *camera = camera_stream_create();
+  camera = camera_stream_create();
   if (!camera) {
     fprintf(stderr,
             "[エラー] CameraStream オブジェクトの作成に失敗しました。\n");
-    text_renderer_destroy();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    exit(6);
+    exit_code = 6;
+    goto cleanup;
   }
 
   if (!camera_stream_init(camera, cur_win_w, cur_win_h)) {
     fprintf(stderr, "[エラー] カメラの初期化に失敗しました。\n");
-    camera_stream_destroy(camera);
-    text_renderer_destroy();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    exit(7);
+    exit_code = 7;
+    goto cleanup;
   }
 
   if (!camera_stream_start(camera)) {
     fprintf(stderr, "[エラー] カメラの起動に失敗しました。\n");
-    camera_stream_destroy(camera);
-    text_renderer_destroy();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    exit(8);
+    exit_code = 8;
+    goto cleanup;
   }
 
   live_ui_print_help(camera);
 
   size_t frame_size = camera_stream_get_frame_size(camera);
-  uint8_t *frame_buffer = (uint8_t *)malloc(frame_size);
+  frame_buffer = (uint8_t *)malloc(frame_size);
   if (!frame_buffer) {
     fprintf(stderr, "[エラー] フレームバッファのメモリ確保に失敗しました。\n");
-    camera_stream_stop(camera);
-    camera_stream_destroy(camera);
-    text_renderer_destroy();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    exit(9);
+    exit_code = 9;
+    goto cleanup;
   }
 
   uint64_t frame_seq = 0;
@@ -217,22 +344,14 @@ int main(int argc, char *argv[]) {
   // Setup GPU streaming texture for camera frames
   Uint32 sdl_format = camera_stream_is_bgr(camera) ? SDL_PIXELFORMAT_BGR24
                                                    : SDL_PIXELFORMAT_RGB24;
-  SDL_Texture *camera_texture = SDL_CreateTexture(
+  camera_texture = SDL_CreateTexture(
       renderer, sdl_format, SDL_TEXTUREACCESS_STREAMING, cam_width, cam_height);
   if (!camera_texture) {
     fprintf(stderr,
             "[エラー] カメラストリーミングテクスチャの作成に失敗しました: %s\n",
             SDL_GetError());
-    free(frame_buffer);
-    camera_stream_stop(camera);
-    camera_stream_destroy(camera);
-    text_renderer_destroy();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    TTF_Quit();
-    IMG_Quit();
-    SDL_Quit();
-    return 1;
+    exit_code = 1;
+    goto cleanup;
   }
 
   const uint32_t target_frame_time_ms = 1000 / 30; // ~30 FPS
@@ -242,16 +361,15 @@ int main(int argc, char *argv[]) {
   live_ui_init(&live_ui);
 
   // Initialize background async JPEG + Exif save queue
-  AsyncSaveQueue save_queue;
   if (!async_save_queue_init(&save_queue)) {
     fprintf(stderr, "[警告] 非同期保存キューの初期化に失敗しました "
                     "(同期保存で動作します)。\n");
   }
 
   // Initialize Playback & Media Gallery manager
-  PlaybackManager playback_mgr;
   playback_manager_init(&playback_mgr, &dcf_storage);
   playback_manager_set_save_queue(&playback_mgr, &save_queue);
+  playback_inited = true;
 
   // Set up signal handler for clean interrupt (Ctrl+C)
   signal(SIGINT, signal_handler);
@@ -265,132 +383,8 @@ int main(int argc, char *argv[]) {
     // Process SDL events (Keyboard, Mouse, Mouse Wheel, and Touch Finger)
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-      if (event.type == SDL_QUIT) {
-        g_running = 0;
-      } else if (event.type == SDL_KEYDOWN) {
-        if (event.key.keysym.sym == SDLK_q) {
-          g_running = 0;
-          continue;
-        }
-
-        // Delegate key events to Playback / Quick Review manager when active
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          playback_manager_handle_key(&playback_mgr, renderer, &event.key);
-        } else {
-          live_ui_handle_key(&live_ui, camera, &playback_mgr, &save_queue,
-                             renderer, &event.key);
-        }
-      } else if (event.type == SDL_MOUSEBUTTONDOWN) {
-        if (event.button.which == SDL_TOUCH_MOUSEID) {
-          continue; /* Handled via SDL_FINGERDOWN to avoid duplicate events */
-        }
-        if (!live_ui.cursor_visible) {
-          SDL_ShowCursor(SDL_ENABLE);
-          live_ui.cursor_visible = true;
-        }
-        live_ui.last_mouse_move_ms = frame_start;
-        int mx = event.button.x;
-        int my = event.button.y;
-
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          if (event.button.button == SDL_BUTTON_LEFT) {
-            playback_manager_handle_pointer_down(&playback_mgr, renderer, mx,
-                                                 my);
-          }
-        } else {
-          live_ui_handle_pointer_down(&live_ui, camera, mx, my,
-                                      event.button.button);
-        }
-      } else if (event.type == SDL_MOUSEMOTION) {
-        if (event.motion.which == SDL_TOUCH_MOUSEID) {
-          continue;
-        }
-        if (!live_ui.cursor_visible) {
-          SDL_ShowCursor(SDL_ENABLE);
-          live_ui.cursor_visible = true;
-        }
-        live_ui.last_mouse_move_ms = frame_start;
-        int mx = event.motion.x;
-        int my = event.motion.y;
-        live_ui_handle_pointer_move(&live_ui, mx, my);
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          playback_manager_handle_pointer_move(&playback_mgr, renderer, mx, my);
-        }
-      } else if (event.type == SDL_MOUSEBUTTONUP) {
-        if (event.button.which == SDL_TOUCH_MOUSEID) {
-          continue;
-        }
-        live_ui.last_mouse_move_ms = frame_start;
-        if (event.button.button == SDL_BUTTON_LEFT) {
-          int mx = event.button.x;
-          int my = event.button.y;
-          if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-            playback_manager_handle_pointer_up(&playback_mgr, renderer, mx, my);
-          } else {
-            live_ui_handle_pointer_up(&live_ui, camera, &playback_mgr,
-                                      &save_queue, renderer, mx, my);
-          }
-        }
-      } else if (event.type == SDL_MOUSEWHEEL) {
-        if (event.wheel.which == SDL_TOUCH_MOUSEID || event.wheel.y == 0) {
-          continue;
-        }
-        if (!live_ui.cursor_visible) {
-          SDL_ShowCursor(SDL_ENABLE);
-          live_ui.cursor_visible = true;
-        }
-        live_ui.last_mouse_move_ms = frame_start;
-        int wy = event.wheel.y;
-        if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-          wy = -wy;
-        }
-        int mx = live_ui.pointer_x >= 0 ? live_ui.pointer_x : (cur_win_w / 2);
-        int my = live_ui.pointer_y >= 0 ? live_ui.pointer_y : (cur_win_h / 2);
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          playback_manager_handle_wheel(&playback_mgr, renderer, wy, mx, my);
-        } else {
-          live_ui_handle_wheel(&live_ui, camera, wy, mx, my);
-        }
-      } else if (event.type == SDL_FINGERDOWN) {
-        if (live_ui.cursor_visible) {
-          SDL_ShowCursor(SDL_DISABLE);
-          live_ui.cursor_visible = false;
-        }
-        int tx = (int)(event.tfinger.x * (float)cur_win_w);
-        int ty = (int)(event.tfinger.y * (float)cur_win_h);
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          playback_manager_handle_pointer_down(&playback_mgr, renderer, tx, ty);
-        } else {
-          live_ui_handle_pointer_down(&live_ui, camera, tx, ty,
-                                      SDL_BUTTON_LEFT);
-        }
-      } else if (event.type == SDL_FINGERMOTION) {
-        int tx = (int)(event.tfinger.x * (float)cur_win_w);
-        int ty = (int)(event.tfinger.y * (float)cur_win_h);
-        live_ui_handle_pointer_move(&live_ui, tx, ty);
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          playback_manager_handle_pointer_move(&playback_mgr, renderer, tx, ty);
-        }
-      } else if (event.type == SDL_FINGERUP) {
-        int tx = (int)(event.tfinger.x * (float)cur_win_w);
-        int ty = (int)(event.tfinger.y * (float)cur_win_h);
-        if (playback_manager_get_mode(&playback_mgr) != APP_MODE_LIVE) {
-          playback_manager_handle_pointer_up(&playback_mgr, renderer, tx, ty);
-        } else {
-          live_ui_handle_pointer_up(&live_ui, camera, &playback_mgr,
-                                    &save_queue, renderer, tx, ty);
-        }
-        /* Clear hover state after touch release so touch buttons don't stay
-         * hovered */
-        live_ui.pointer_x = -1;
-        live_ui.pointer_y = -1;
-        playback_mgr.pointer_x = -1;
-        playback_mgr.pointer_y = -1;
-      }
-
-      if (live_ui_is_quit_requested(&live_ui)) {
-        g_running = 0;
-      }
+      process_sdl_event(&event, frame_start, cur_win_w, cur_win_h, &live_ui,
+                        &playback_mgr, camera, &save_queue, renderer);
     }
 
     /* Auto-hide mouse cursor after 3 seconds of inactivity */
@@ -427,9 +421,10 @@ int main(int argc, char *argv[]) {
                                    captured_still.height, captured_still.stride,
                                    captured_still.is_bgr, jpeg_q, &exif)) {
           // Fallback to synchronous save if background queue was unavailable
-          save_still_jpeg(filepath, captured_still.data, captured_still.width,
-                          captured_still.height, captured_still.stride,
-                          captured_still.is_bgr, jpeg_q, &exif);
+          async_save_queue_save_sync(
+              filepath, captured_still.data, captured_still.width,
+              captured_still.height, captured_still.stride,
+              captured_still.is_bgr, jpeg_q, &exif);
           free(captured_still.data);
         }
       } else {
@@ -487,6 +482,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
+cleanup:
   // 9. Cleanup resources
   SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s: %d: 終了処理を実行中...",
               __FILE__, __LINE__);
@@ -497,10 +493,14 @@ int main(int argc, char *argv[]) {
     async_save_queue_wait_idle(&save_queue);
   }
   async_save_queue_destroy(&save_queue);
-  playback_manager_destroy(&playback_mgr);
+  if (playback_inited) {
+    playback_manager_destroy(&playback_mgr);
+  }
   free(frame_buffer);
-  camera_stream_stop(camera);
-  camera_stream_destroy(camera);
+  if (camera) {
+    camera_stream_stop(camera);
+    camera_stream_destroy(camera);
+  }
 
   text_renderer_destroy();
 
@@ -513,10 +513,18 @@ int main(int argc, char *argv[]) {
   if (window) {
     SDL_DestroyWindow(window);
   }
+  if (ttf_inited) {
+    TTF_Quit();
+  }
+  if (img_inited) {
+    IMG_Quit();
+  }
+  if (sdl_inited) {
+    SDL_Quit();
+  }
 
   SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
               "%s: %d: アプリケーションを終了します。", __FILE__, __LINE__);
 
-  exit(0);
-  return 0;
+  return exit_code;
 }
