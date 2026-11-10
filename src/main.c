@@ -72,7 +72,8 @@ static bool save_still_jpeg(const char *filename, const uint8_t *src_data,
     return false;
   }
 
-  const int quality = (jpeg_quality > 0 && jpeg_quality <= 100) ? jpeg_quality : 90;
+  const int quality =
+      (jpeg_quality > 0 && jpeg_quality <= 100) ? jpeg_quality : 90;
   int ret = IMG_SaveJPG(surface, filename, quality);
   if (ret != 0) {
     fprintf(stderr, "[エラー] IMG_SaveJPG による保存に失敗しました: %s\n",

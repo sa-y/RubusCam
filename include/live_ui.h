@@ -147,4 +147,3 @@ void live_ui_handle_wheel(LiveUiController *ui, CameraStream *camera,
 #endif
 
 #endif /* LIVE_UI_H */
-
