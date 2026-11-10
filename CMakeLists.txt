@@ -32,6 +32,7 @@ set(SOURCES
     src/camera_stream.cpp
     src/text_renderer.c
     src/dcf_storage.c
+    src/live_ui.c
     src/playback_manager.c
     src/exif_writer.c
     src/async_save_queue.c
