@@ -132,21 +132,34 @@ create_safe_texture_from_surface(SDL_Renderer *renderer, SDL_Surface *surf,
     scaled_h = 1;
   }
 
-  SDL_Surface *rgb_surf =
-      SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB24, 0);
-  if (!rgb_surf) {
-    return NULL;
+  Uint32 target_fmt = SDL_PIXELFORMAT_RGB24;
+  SDL_Surface *src_surf = surf;
+  SDL_Surface *converted_surf = NULL;
+
+  if (surf->format && (surf->format->format == SDL_PIXELFORMAT_RGB24 ||
+                       surf->format->format == SDL_PIXELFORMAT_BGR24)) {
+    target_fmt = surf->format->format;
+  } else {
+    converted_surf = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB24, 0);
+    if (!converted_surf) {
+      return NULL;
+    }
+    src_surf = converted_surf;
   }
 
-  SDL_Surface *scaled_surf = SDL_CreateRGBSurfaceWithFormat(
-      0, scaled_w, scaled_h, 24, SDL_PIXELFORMAT_RGB24);
+  SDL_Surface *scaled_surf =
+      SDL_CreateRGBSurfaceWithFormat(0, scaled_w, scaled_h, 24, target_fmt);
   if (!scaled_surf) {
-    SDL_FreeSurface(rgb_surf);
+    if (converted_surf) {
+      SDL_FreeSurface(converted_surf);
+    }
     return NULL;
   }
 
-  SDL_BlitScaled(rgb_surf, NULL, scaled_surf, NULL);
-  SDL_FreeSurface(rgb_surf);
+  SDL_BlitScaled(src_surf, NULL, scaled_surf, NULL);
+  if (converted_surf) {
+    SDL_FreeSurface(converted_surf);
+  }
 
   SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, scaled_surf);
   if (tex) {
@@ -779,6 +792,14 @@ void playback_manager_start_quick_review(
     pm->current_meta.ev_bias = exp_status->ev_compensation;
   }
 
+  int qr_max_w = 1280;
+  int qr_max_h = 720;
+  if (SDL_GetRendererOutputSize(renderer, &qr_max_w, &qr_max_h) != 0 ||
+      qr_max_w <= 0 || qr_max_h <= 0) {
+    qr_max_w = 1280;
+    qr_max_h = 720;
+  }
+
   if (raw_data && width > 0 && height > 0) {
     int eff_stride = stride > 0 ? stride : (width * 3);
     Uint32 fmt = is_bgr ? SDL_PIXELFORMAT_BGR24 : SDL_PIXELFORMAT_RGB24;
@@ -786,7 +807,8 @@ void playback_manager_start_quick_review(
         (void *)raw_data, width, height, 24, eff_stride, fmt);
     if (surf) {
       pm->current_texture = create_safe_texture_from_surface(
-          renderer, surf, 0, 0, &pm->current_tex_w, &pm->current_tex_h);
+          renderer, surf, qr_max_w, qr_max_h, &pm->current_tex_w,
+          &pm->current_tex_h);
       SDL_FreeSurface(surf);
     }
   }
@@ -796,7 +818,8 @@ void playback_manager_start_quick_review(
     SDL_Surface *surf = IMG_Load(filepath);
     if (surf) {
       pm->current_texture = create_safe_texture_from_surface(
-          renderer, surf, 0, 0, &pm->current_tex_w, &pm->current_tex_h);
+          renderer, surf, qr_max_w, qr_max_h, &pm->current_tex_w,
+          &pm->current_tex_h);
       SDL_FreeSurface(surf);
     }
   }

@@ -212,23 +212,6 @@ bool camera_stream_trigger_touch_af(CameraStream *cam, float norm_x,
 CameraAfStatus camera_stream_get_af_status(const CameraStream *cam);
 
 /*
- * Callback function type for encoding and saving a captured still image buffer.
- * Returns true on success, false on failure.
- */
-typedef bool (*CameraStillSaveCallback)(const char *filename,
-                                        const uint8_t *data, int width,
-                                        int height, int stride, bool is_bgr);
-
-/*
- * Capture a high-resolution still image (equivalent to 'Space' key).
- * Uses the dedicated still stream (dual-stream or mode-switch fallback) and
- * invokes save_cb to encode and write the image to filename.
- * Returns true on success, false on failure.
- */
-bool camera_stream_capture_still(CameraStream *cam, const char *filename,
-                                 CameraStillSaveCallback save_cb);
-
-/*
  * High-resolution captured still frame returned by non-blocking capture API.
  * Ownership of `data` (heap-allocated via malloc) is transferred to the caller,
  * who must release it with free().

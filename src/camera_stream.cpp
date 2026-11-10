@@ -57,6 +57,35 @@ void kelvinToColourGains(int kelvin, float &outRed, float &outBlue) {
   outRed = 2.00f;
   outBlue = 1.56f;
 }
+
+bool isSupportedRgbFormat(const libcamera::PixelFormat &fmt) {
+  return fmt == libcamera::formats::BGR888 || fmt == libcamera::formats::RGB888;
+}
+
+// Validate a CameraConfiguration and automatically fall back any non-RGB888 /
+// BGR888 stream pixelFormat to formats::RGB888 before re-validating.
+bool validateRgbCameraConfiguration(libcamera::CameraConfiguration &config) {
+  auto status = config.validate();
+  bool allRgb = true;
+  for (unsigned int i = 0; i < config.size(); ++i) {
+    if (!isSupportedRgbFormat(config.at(i).pixelFormat)) {
+      config.at(i).pixelFormat = libcamera::formats::RGB888;
+      allRgb = false;
+    }
+  }
+  if (status == libcamera::CameraConfiguration::Invalid || !allRgb) {
+    status = config.validate();
+  }
+  if (status == libcamera::CameraConfiguration::Invalid) {
+    return false;
+  }
+  for (unsigned int i = 0; i < config.size(); ++i) {
+    if (!isSupportedRgbFormat(config.at(i).pixelFormat)) {
+      return false;
+    }
+  }
+  return true;
+}
 } // namespace
 
 // C++ internal representation for CameraStream
@@ -109,12 +138,12 @@ struct CameraStream {
 
   // Synchronization & buffer for high-resolution still capture
   std::mutex m_stillMutex;
-  std::condition_variable m_stillCv;
   std::atomic<bool> m_stillCapturePending{false};
   std::atomic<bool> m_asyncStillInFlight{false};
   std::chrono::steady_clock::time_point m_asyncStillStartTime{};
   bool m_stillFrameReady = false;
-  std::vector<uint8_t> m_stillFrame;
+  uint8_t *m_stillData = nullptr;
+  size_t m_stillSize = 0;
   int m_capturedStillWidth = 0;
   int m_capturedStillHeight = 0;
   int m_capturedStillStride = 0;
@@ -156,6 +185,18 @@ struct CameraStream {
   std::atomic<float> m_actualRedGain{2.00f};
   std::atomic<float> m_actualBlueGain{1.56f};
 
+  ~CameraStream() { clearStillBufferLocked(); }
+
+  void clearStillBufferLocked() {
+    if (m_stillData) {
+      std::free(m_stillData);
+      m_stillData = nullptr;
+    }
+    m_stillSize = 0;
+    m_stillFrameReady = false;
+  }
+
+  void updateExposureMetadata(const libcamera::ControlList &metadata);
   void applyWhiteBalanceToControlList(libcamera::ControlList &ctrls) const;
   void applyMeteringToControlList(libcamera::ControlList &ctrls) const;
   void populateExposureStatus(CameraExposureStatus *out_status) const;
@@ -166,10 +207,33 @@ struct CameraStream {
   bool allocateAndMapStreams();
   void teardownStreams();
   bool configureDualOrSingleStream();
-  bool captureStillByModeSwitch(std::vector<uint8_t> &outBuffer, int &outWidth,
-                                int &outHeight, int &outStride,
+  bool captureStillByModeSwitch(uint8_t *&outData, size_t &outSize,
+                                int &outWidth, int &outHeight, int &outStride,
+                                bool &outMemoryOrderIsBGR);
+  bool captureStillWithFallback(uint8_t *&outData, size_t &outSize,
+                                int &outWidth, int &outHeight, int &outStride,
                                 bool &outMemoryOrderIsBGR);
 };
+
+void CameraStream::updateExposureMetadata(
+    const libcamera::ControlList &metadata) {
+  if (const auto expTime = metadata.get(libcamera::controls::ExposureTime)) {
+    m_actualExposureUs = *expTime;
+  }
+  if (const auto gain = metadata.get(libcamera::controls::AnalogueGain)) {
+    m_actualGain = *gain;
+  }
+  if (const auto colourTemp =
+          metadata.get(libcamera::controls::ColourTemperature)) {
+    m_actualColourTempK = *colourTemp;
+  }
+  if (const auto colourGains = metadata.get(libcamera::controls::ColourGains)) {
+    if (colourGains->size() >= 2) {
+      m_actualRedGain = (*colourGains)[0];
+      m_actualBlueGain = (*colourGains)[1];
+    }
+  }
+}
 
 void CameraStream::applyWhiteBalanceToControlList(
     libcamera::ControlList &ctrls) const {
@@ -611,28 +675,7 @@ bool CameraStream::configureDualOrSingleStream() {
       vfCfg.pixelFormat = libcamera::formats::BGR888;
       vfCfg.bufferCount = 4;
 
-      auto status = dualConfig->validate();
-
-      // Fallback to RGB888 if BGR888 was adjusted to a non-RGB format
-      auto isRgbFormat = [](const libcamera::PixelFormat &fmt) {
-        return fmt == libcamera::formats::BGR888 ||
-               fmt == libcamera::formats::RGB888;
-      };
-
-      if (status == libcamera::CameraConfiguration::Invalid ||
-          !isRgbFormat(stillCfg.pixelFormat) ||
-          !isRgbFormat(vfCfg.pixelFormat)) {
-        if (!isRgbFormat(stillCfg.pixelFormat)) {
-          stillCfg.pixelFormat = libcamera::formats::RGB888;
-        }
-        if (!isRgbFormat(vfCfg.pixelFormat)) {
-          vfCfg.pixelFormat = libcamera::formats::RGB888;
-        }
-        status = dualConfig->validate();
-      }
-
-      if (status != libcamera::CameraConfiguration::Invalid &&
-          isRgbFormat(stillCfg.pixelFormat) && isRgbFormat(vfCfg.pixelFormat)) {
+      if (validateRgbCameraConfiguration(*dualConfig)) {
         if (m_camera->configure(dualConfig.get()) == 0) {
           m_config = std::move(dualConfig);
           libcamera::StreamConfiguration &activeStillCfg = m_config->at(0);
@@ -694,17 +737,10 @@ bool CameraStream::configureDualOrSingleStream() {
   streamConfig.pixelFormat = libcamera::formats::BGR888;
   streamConfig.bufferCount = 4;
 
-  libcamera::CameraConfiguration::Status status = m_config->validate();
-  if (status == libcamera::CameraConfiguration::Invalid ||
-      (streamConfig.pixelFormat != libcamera::formats::BGR888 &&
-       streamConfig.pixelFormat != libcamera::formats::RGB888)) {
-    streamConfig.pixelFormat = libcamera::formats::RGB888;
-    status = m_config->validate();
-    if (status == libcamera::CameraConfiguration::Invalid) {
-      std::cerr << "[エラー] 有効なカメラストリーム構成が見つかりませんでした。"
-                << std::endl;
-      return false;
-    }
+  if (!validateRgbCameraConfiguration(*m_config)) {
+    std::cerr << "[エラー] 有効なカメラストリーム構成が見つかりませんでした。"
+              << std::endl;
+    return false;
   }
 
   // DRM/libcamera formats::RGB888 stores bytes in memory as [B, G, R]
@@ -761,22 +797,7 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
     m_lastLensPosition = *lensPos;
     m_hasLensPosition = true;
   }
-  if (const auto expTime = metadata.get(libcamera::controls::ExposureTime)) {
-    m_actualExposureUs = *expTime;
-  }
-  if (const auto gain = metadata.get(libcamera::controls::AnalogueGain)) {
-    m_actualGain = *gain;
-  }
-  if (const auto colourTemp =
-          metadata.get(libcamera::controls::ColourTemperature)) {
-    m_actualColourTempK = *colourTemp;
-  }
-  if (const auto colourGains = metadata.get(libcamera::controls::ColourGains)) {
-    if (colourGains->size() >= 2) {
-      m_actualRedGain = (*colourGains)[0];
-      m_actualBlueGain = (*colourGains)[1];
-    }
-  }
+  updateExposureMetadata(metadata);
 
   const auto &buffers = request->buffers();
 
@@ -822,10 +843,13 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
           bytesUsed = mapIt->second.length;
         }
 
-        {
+        uint8_t *heapCopy = static_cast<uint8_t *>(std::malloc(bytesUsed));
+        if (heapCopy) {
+          std::memcpy(heapCopy, dataPtr, bytesUsed);
           std::lock_guard<std::mutex> lock(m_stillMutex);
-          m_stillFrame.resize(bytesUsed);
-          std::memcpy(m_stillFrame.data(), dataPtr, bytesUsed);
+          clearStillBufferLocked();
+          m_stillData = heapCopy;
+          m_stillSize = bytesUsed;
           m_capturedStillWidth = m_stillWidth;
           m_capturedStillHeight = m_stillHeight;
           m_capturedStillStride = m_stillStride;
@@ -833,7 +857,6 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
           populateExposureStatus(&m_capturedStillExpStatus);
           m_stillFrameReady = true;
         }
-        m_stillCv.notify_one();
       }
     }
   }
@@ -919,10 +942,12 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
   m_camera->queueRequest(request);
 }
 
-bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
+bool CameraStream::captureStillByModeSwitch(uint8_t *&outData, size_t &outSize,
                                             int &outWidth, int &outHeight,
                                             int &outStride,
                                             bool &outMemoryOrderIsBGR) {
+  outData = nullptr;
+  outSize = 0;
   if (!m_camera)
     return false;
 
@@ -945,15 +970,7 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
     sc.pixelFormat = libcamera::formats::BGR888;
     sc.bufferCount = 1;
 
-    auto status = stillConfig->validate();
-    if (status == libcamera::CameraConfiguration::Invalid ||
-        (sc.pixelFormat != libcamera::formats::BGR888 &&
-         sc.pixelFormat != libcamera::formats::RGB888)) {
-      sc.pixelFormat = libcamera::formats::RGB888;
-      status = stillConfig->validate();
-    }
-
-    if (status != libcamera::CameraConfiguration::Invalid &&
+    if (validateRgbCameraConfiguration(*stillConfig) &&
         m_camera->configure(stillConfig.get()) == 0) {
       m_stillWidth = sc.size.width;
       m_stillHeight = sc.size.height;
@@ -982,26 +999,7 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
                 void onComplete(libcamera::Request *r) {
                   if (r->status() == libcamera::Request::RequestCancelled)
                     return;
-                  const libcamera::ControlList &meta = r->metadata();
-                  if (const auto expTime =
-                          meta.get(libcamera::controls::ExposureTime)) {
-                    self->m_actualExposureUs = *expTime;
-                  }
-                  if (const auto gain =
-                          meta.get(libcamera::controls::AnalogueGain)) {
-                    self->m_actualGain = *gain;
-                  }
-                  if (const auto colourTemp =
-                          meta.get(libcamera::controls::ColourTemperature)) {
-                    self->m_actualColourTempK = *colourTemp;
-                  }
-                  if (const auto colourGains =
-                          meta.get(libcamera::controls::ColourGains)) {
-                    if (colourGains->size() >= 2) {
-                      self->m_actualRedGain = (*colourGains)[0];
-                      self->m_actualBlueGain = (*colourGains)[1];
-                    }
-                  }
+                  self->updateExposureMetadata(r->metadata());
                   {
                     std::lock_guard<std::mutex> lk(*mtx);
                     *doneFlag = true;
@@ -1036,18 +1034,23 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
                   if (bytesUsed == 0) {
                     bytesUsed = plane.length;
                   }
-                  outBuffer.resize(bytesUsed);
-                  std::memcpy(outBuffer.data(), addr, bytesUsed);
-                  outWidth = sc.size.width;
-                  outHeight = sc.size.height;
-                  outStride = sc.stride;
-                  // DRM/libcamera formats::RGB888 stores bytes in memory as
-                  // [B, G, R] (SDL_PIXELFORMAT_BGR24).
-                  outMemoryOrderIsBGR =
-                      (sc.pixelFormat == libcamera::formats::RGB888);
-                  m_stillWidth = outWidth;
-                  m_stillHeight = outHeight;
-                  captured = true;
+                  uint8_t *heapCopy =
+                      static_cast<uint8_t *>(std::malloc(bytesUsed));
+                  if (heapCopy) {
+                    std::memcpy(heapCopy, addr, bytesUsed);
+                    outData = heapCopy;
+                    outSize = bytesUsed;
+                    outWidth = sc.size.width;
+                    outHeight = sc.size.height;
+                    outStride = sc.stride;
+                    // DRM/libcamera formats::RGB888 stores bytes in memory as
+                    // [B, G, R] (SDL_PIXELFORMAT_BGR24).
+                    outMemoryOrderIsBGR =
+                        (sc.pixelFormat == libcamera::formats::RGB888);
+                    m_stillWidth = outWidth;
+                    m_stillHeight = outHeight;
+                    captured = true;
+                  }
                 }
                 m_camera->stop();
               }
@@ -1071,6 +1074,40 @@ bool CameraStream::captureStillByModeSwitch(std::vector<uint8_t> &outBuffer,
   }
 
   return captured;
+}
+
+bool CameraStream::captureStillWithFallback(uint8_t *&outData, size_t &outSize,
+                                            int &outWidth, int &outHeight,
+                                            int &outStride,
+                                            bool &outMemoryOrderIsBGR) {
+  if (captureStillByModeSwitch(outData, outSize, outWidth, outHeight, outStride,
+                               outMemoryOrderIsBGR)) {
+    return true;
+  }
+
+  std::cerr << "[警告] 高解像度モード切替撮影に失敗しました。"
+               "プレビューフレームへフォールバックします。"
+            << std::endl;
+  std::lock_guard<std::mutex> lock(m_frameMutex);
+  if (m_latestFrame.empty()) {
+    outData = nullptr;
+    outSize = 0;
+    return false;
+  }
+  uint8_t *heapCopy = static_cast<uint8_t *>(std::malloc(m_latestFrame.size()));
+  if (!heapCopy) {
+    outData = nullptr;
+    outSize = 0;
+    return false;
+  }
+  std::memcpy(heapCopy, m_latestFrame.data(), m_latestFrame.size());
+  outData = heapCopy;
+  outSize = m_latestFrame.size();
+  outWidth = m_width;
+  outHeight = m_height;
+  outStride = m_stride;
+  outMemoryOrderIsBGR = m_memoryOrderIsBGR;
+  return true;
 }
 
 // -------------------------------------------------------------
@@ -1214,11 +1251,18 @@ void camera_stream_stop(CameraStream *cam) {
     return;
 
   cam->m_running = false;
+  cam->m_stillCapturePending = false;
+  cam->m_asyncStillInFlight = false;
 
   if (cam->m_camera) {
     cam->m_camera->stop();
     cam->m_camera->requestCompleted.disconnect(cam,
                                                &CameraStream::requestCompleted);
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(cam->m_stillMutex);
+    cam->clearStillBufferLocked();
   }
 
   cam->teardownStreams();
@@ -1442,90 +1486,6 @@ CameraAfStatus camera_stream_get_af_status(const CameraStream *cam) {
   }
 }
 
-bool camera_stream_capture_still(CameraStream *cam, const char *filename,
-                                 CameraStillSaveCallback save_cb) {
-  if (!cam || !filename || !save_cb)
-    return false;
-
-  std::cout << "[-] 高解像度静止画を撮影中 (" << cam->m_stillWidth << "x"
-            << cam->m_stillHeight << ")..." << std::endl;
-
-  std::vector<uint8_t> stillCopy;
-  int width = 0;
-  int height = 0;
-  int stride = 0;
-  bool isBGR = false;
-
-  // Path A: Dual-stream on-demand still buffer capture
-  if (cam->m_dualStreamActive && cam->m_stillStream &&
-      !cam->m_stillBuffers.empty()) {
-    {
-      std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-      cam->m_stillFrameReady = false;
-    }
-    cam->m_stillCapturePending = true;
-
-    int64_t waitMs =
-        std::max<int64_t>(2000, cam->m_shutterUsSetting.load() / 1000 + 2000);
-    std::unique_lock<std::mutex> lock(cam->m_stillMutex);
-    bool ready =
-        cam->m_stillCv.wait_for(lock, std::chrono::milliseconds(waitMs),
-                                [&] { return cam->m_stillFrameReady; });
-    if (ready && !cam->m_stillFrame.empty()) {
-      stillCopy = std::move(cam->m_stillFrame);
-      cam->m_stillFrameReady = false;
-      width = cam->m_stillWidth;
-      height = cam->m_stillHeight;
-      stride = cam->m_stillStride;
-      isBGR = cam->m_stillMemoryOrderIsBGR;
-    } else {
-      cam->m_stillCapturePending = false;
-      std::cerr << "[警告] "
-                   "マルチストリーム静止画取得がタイムアウトしました。モード切"
-                   "替キャプチャを試行します。"
-                << std::endl;
-    }
-  }
-
-  // Path B: Mode-switch high-resolution still capture
-  if (stillCopy.empty()) {
-    if (!cam->captureStillByModeSwitch(stillCopy, width, height, stride,
-                                       isBGR)) {
-      std::cerr << "[警告] "
-                   "高解像度モード切替撮影に失敗しました。プレビューフレームか"
-                   "ら保存します。"
-                << std::endl;
-      std::lock_guard<std::mutex> lock(cam->m_frameMutex);
-      stillCopy = cam->m_latestFrame;
-      width = cam->m_width;
-      height = cam->m_height;
-      stride = cam->m_stride;
-      isBGR = cam->m_memoryOrderIsBGR;
-    }
-  }
-
-  if (stillCopy.empty()) {
-    std::cerr << "[エラー] キャプチャ用フレームバッファが空です。" << std::endl;
-    return false;
-  }
-
-  if (!save_cb(filename, stillCopy.data(), width, height, stride, isBGR)) {
-    std::cerr << "[エラー] 画像ファイルの保存に失敗しました: " << filename
-              << std::endl;
-    return false;
-  }
-
-  std::cout << "[★成功] 保存しました: " << filename << " (" << width << "x"
-            << height << ")" << std::endl;
-
-  // Re-apply Continuous AF controls if supported
-  if (cam->m_afSupported) {
-    cam->m_afContinuousPending = true;
-  }
-
-  return true;
-}
-
 bool camera_stream_request_still(CameraStream *cam) {
   if (!cam || !cam->m_running) {
     return false;
@@ -1545,8 +1505,7 @@ bool camera_stream_request_still(CameraStream *cam) {
       !cam->m_stillBuffers.empty()) {
     {
       std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-      cam->m_stillFrameReady = false;
-      cam->m_stillFrame.clear();
+      cam->clearStillBufferLocked();
     }
     cam->m_asyncStillStartTime = std::chrono::steady_clock::now();
     cam->m_stillCapturePending = true;
@@ -1555,28 +1514,23 @@ bool camera_stream_request_still(CameraStream *cam) {
 
   // Path B: Single-stream mode-switch capture (encoding still happens in
   // background save queue)
-  std::vector<uint8_t> stillCopy;
+  uint8_t *stillData = nullptr;
+  size_t stillSize = 0;
   int width = 0;
   int height = 0;
   int stride = 0;
   bool isBGR = false;
-  if (!cam->captureStillByModeSwitch(stillCopy, width, height, stride, isBGR)) {
-    std::lock_guard<std::mutex> lock(cam->m_frameMutex);
-    stillCopy = cam->m_latestFrame;
-    width = cam->m_width;
-    height = cam->m_height;
-    stride = cam->m_stride;
-    isBGR = cam->m_memoryOrderIsBGR;
-  }
-
-  if (stillCopy.empty()) {
+  if (!cam->captureStillWithFallback(stillData, stillSize, width, height,
+                                     stride, isBGR)) {
     cam->m_asyncStillInFlight = false;
     return false;
   }
 
   {
     std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-    cam->m_stillFrame = std::move(stillCopy);
+    cam->clearStillBufferLocked();
+    cam->m_stillData = stillData;
+    cam->m_stillSize = stillSize;
     cam->m_capturedStillWidth = width;
     cam->m_capturedStillHeight = height;
     cam->m_capturedStillStride = stride;
@@ -1597,7 +1551,8 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
     return false;
   }
 
-  std::vector<uint8_t> localBuf;
+  uint8_t *heapBuf = nullptr;
+  size_t bufSize = 0;
   int width = 0;
   int height = 0;
   int stride = 0;
@@ -1605,16 +1560,22 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
   CameraExposureStatus expStatus{};
   bool ready = false;
 
-  std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-  if (cam->m_stillFrameReady && !cam->m_stillFrame.empty()) {
-    localBuf = std::move(cam->m_stillFrame);
-    cam->m_stillFrameReady = false;
-    width = cam->m_capturedStillWidth;
-    height = cam->m_capturedStillHeight;
-    stride = cam->m_capturedStillStride;
-    isBGR = cam->m_capturedStillMemoryOrderIsBGR;
-    expStatus = cam->m_capturedStillExpStatus;
-    ready = true;
+  {
+    std::lock_guard<std::mutex> lock(cam->m_stillMutex);
+    if (cam->m_stillFrameReady && cam->m_stillData != nullptr &&
+        cam->m_stillSize > 0) {
+      heapBuf = cam->m_stillData;
+      bufSize = cam->m_stillSize;
+      cam->m_stillData = nullptr;
+      cam->m_stillSize = 0;
+      cam->m_stillFrameReady = false;
+      width = cam->m_capturedStillWidth;
+      height = cam->m_capturedStillHeight;
+      stride = cam->m_capturedStillStride;
+      isBGR = cam->m_capturedStillMemoryOrderIsBGR;
+      expStatus = cam->m_capturedStillExpStatus;
+      ready = true;
+    }
   }
 
   if (!ready) {
@@ -1633,31 +1594,16 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
     std::cerr << "[警告] 非同期マルチストリーム取得がタイムアウトしました。"
                  "モード切替キャプチャへフォールバックします。"
               << std::endl;
-    if (!cam->captureStillByModeSwitch(localBuf, width, height, stride,
+    if (!cam->captureStillWithFallback(heapBuf, bufSize, width, height, stride,
                                        isBGR)) {
-      std::lock_guard<std::mutex> lock(cam->m_frameMutex);
-      localBuf = cam->m_latestFrame;
-      width = cam->m_width;
-      height = cam->m_height;
-      stride = cam->m_stride;
-      isBGR = cam->m_memoryOrderIsBGR;
-    }
-    camera_stream_get_exposure_status(cam, &expStatus);
-    if (localBuf.empty()) {
       cam->m_asyncStillInFlight = false;
       return false;
     }
+    camera_stream_get_exposure_status(cam, &expStatus);
   }
-
-  uint8_t *heapBuf = static_cast<uint8_t *>(std::malloc(localBuf.size()));
-  if (!heapBuf) {
-    cam->m_asyncStillInFlight = false;
-    return false;
-  }
-  std::memcpy(heapBuf, localBuf.data(), localBuf.size());
 
   out_still->data = heapBuf;
-  out_still->size = localBuf.size();
+  out_still->size = bufSize;
   out_still->width = width;
   out_still->height = height;
   out_still->stride = stride;
