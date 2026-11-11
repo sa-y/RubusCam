@@ -1,47 +1,27 @@
-# RubusCam 
+# RubusCam
 
-Raspberry Pi 上で **SDL2**、**SDL2_image**、**SDL2_ttf**、および **libcamera** を利用し、カメラ映像のリアルタイムプレビュー表示と静止画撮影を行うカメラビューアツールです。  
-`libcamera` は公式に C++ API のみを提供しているため、C言語から安全かつシンプルに呼び出せるよう、`extern "C"` で囲んだ軽量な C++ ラッパー層を用意して連携しています。
+Raspberry Pi 上で **SDL2**、**SDL2_image**、**SDL2_ttf**、および **libcamera** を利用し、カメラ映像のリアルタイムプレビュー表示と高解像度静止画撮影を行うデジタルスチルカメラ (DSC) ツールです。  
+`libcamera` は C++20 API のみを提供しているため、軽量な `extern "C"` ラッパー層を介して **C11** のコア実装から安全かつシンプルに制御しています。
 
 ---
 
 ## 主な特徴
 
-- **C言語によるコア実装**: メインループ、SDL2 GPU レンダリング処理、SDL2_ttf テキスト描画、シグナル制御を C11 で実装。
-- **libcamera C++ ラッパー (`extern "C"`)**: libcamera のストリーム制御・フレーム取得・AF制御・JPEGキャプチャを不透明構造体 (`CameraStream`) と C インターフェース関数群でカプセル化。
-- **GPU ハードウェアアクセラレーション描画**: `SDL_Renderer` とストリーミングテクスチャ (`SDL_Texture`) により、低遅延（約30 FPS）でカメラ映像を描画。
-- **アスペクト比維持スケーリング**: ウィンドウサイズや画面解像度に合わせて、映像の比率を崩さず自動でレターボックス／ピラーボックス表示。
-- **オートフォーカス対応**: Camera Module 3 等のオートフォーカス対応カメラにおいて、プレビュー中も自動でピントを合わせ続ける「常時追従AF (Continuous AF)」が有効。
-- **ワンキー撮影**: `Space` キーを押すだけで、高品質な静止画 (JPEG) を即座にファイル保存。
-- **手動リフォーカス**: `F` キーを押すことで、任意のタイミングでワンショットAF再調整が可能。
-- **美麗なGUIオーバーレイ表示**: `SDL2_ttf` によるアンチエイリアス TrueType フォントと半透明背景ボックスを GPU 合成。
-- **コンソール (CLI) / KMSDRM 環境対応**: X11/Wayland などのデスクトップ環境がないコンソール環境でも、`SDL_VIDEODRIVER=kmsdrm` によりマウスカーソル非表示で軽快に全画面描画。
-- **高解像度静止画ストリームの分離**: プレビュー表示（`Viewfinder`: 例 `1024x600`）とは別に、センサー本来の最大解像度（`StillCapture`: 例 `4608x2592`）での静止画キャプチャに対応（2系統マルチストリーム構成およびモード切替フォールバック対応）。
-- **非同期キャプチャ & バックグラウンド保存キュー**: シャッター押下時にプレビュー描画をブロックせず、メモリ上の RAW フレームから即座にクイックレビューを表示しつつ、JPEG エンコード・Exif 埋め込み・SDカード書き込みを専用ワーカースレッドで非同期処理。
-- **Exif 2.3 メタデータ埋め込み**: 撮影日時、カメラモデル名、シャッター速度、F値、ISO感度、露出補正値、焦点距離、ホワイトバランスを Exif APP1 (`0xFFE1`) ヘッダーとして自動記録。
-- **JPEG 保存品質設定**: `J` キーで `SuperFine (98%)` / `Fine (90%)` / `Normal (80%)` の3段階クオリティをワンタッチ切り替え。
-- **露出・ホワイトバランス・測光モード制御**: 露出補正 (`-3.0〜+3.0 EV`)、ISO 感度 (`Auto / 100〜3200`)、シャッター速度 (`Auto / 1/2000s〜2.0s`)、ホワイトバランス（AWB / 各種プリセット / 色温度手動指定 `2500K〜10000K` / AWBロック）、測光モード（評価 / 中央重点 / スポット）の切り替えに対応。
-- **クイックレビュー & 再生・ギャラリーモード**: 撮影直後の自動プレビュー表示（即時破棄・保護対応）に加え、`P` キーで再生モードへ切り替え、Exif 詳細情報表示、デジタル拡大・パン（`2x / 4x / 8x` + PiP ナビマップ）、`3x3 / 4x4` サムネイル一覧、プロテクト保護・削除が可能。
-- **DCF 準拠のファイル命名・ディレクトリ管理**: カメラ業界標準の `DCIM/100_PICA/IMG_0001.JPG` 形式（または `--date-dir` 指定で日付別 `DCIM/YYYYMMDD/IMG_0001.JPG`）で自動連番保存し、撮影前にストレージ残容量を事前確認。
-- **シグナルハンドリング**: `Ctrl + C` などの割り込み時も、カメラストリームと SDL リソースを安全に解放して終了。
+- **低遅延 GPU プレビュー & タッチ/マウス GUI**: `SDL_Renderer` による約30 FPS のアスペクト比維持描画と、`SDL2_ttf` による半透明 OSD・タッチ操作ボタンを実装。X11/Wayland 環境だけでなくコンソール (`SDL_VIDEODRIVER=kmsdrm`) 全画面実行にも対応。
+- **高解像度静止画キャプチャ & 非同期保存パイプライン**: プレビュー用ストリーム (`Viewfinder`) とは別にセンサー最大解像度 (`StillCapture`: 例 `4608x2592`) で撮影。シャッター直後にクイックレビューを即座に表示しつつ、オンメモリ JPEG エンコード・Exif 2.3 メタデータ埋め込み・SDカード書き込みを専用ワーカースレッドで非同期処理。
+- **本格的なカメラ制御 (AF / 露出 / WB / 測光)**: 常時追従AF・ワンショットAF・画面タップによる**タッチAF**に加え、露出補正 (`±3.0 EV`)、ISO感度 (`Auto / 100〜3200`)、シャッター速度 (`Auto / 1/2000s〜2.0s`)、ホワイトバランス（プリセット / 色温度 `2500K〜10000K` / AWBロック）、測光モード（評価 / 中央重点 / スポット）、JPEG画質（3段階）の調整に対応。
+- **再生・ギャラリー & DCF メディア管理**: クイックレビュー（即時破棄・保護対応）および再生モードを備え、Exif 詳細表示、デジタル拡大・パン（`2x / 4x / 8x` + PiP ナビマップ）、`3x3 / 4x4` サムネイル一覧、プロテクト保護・削除に対応。ファイルは DCF 準拠（`DCIM/100_PICA/IMG_0001.JPG` または `--date-dir` による日付別）で自動採番。
+- **C11 コア + libcamera C++20 ラッパー設計**: カメラ制御を不透明構造体 (`CameraStream`) と C 関数群にカプセル化し、`Ctrl + C` 割り込み時も安全にリソースを解放。
 
 ---
 
 ## 動作要件
 
-- **ハードウェア**:
-  - Raspberry Pi (Raspberry Pi 4 / 5 等)
-  - Raspberry Pi Camera Module (Camera Module 3 / v2 等)
+- **ハードウェア**: Raspberry Pi (Raspberry Pi 4 / 5 等) + Raspberry Pi Camera Module (Module 3 / v2 等)
 - **OS**: Raspberry Pi OS (Debian 12 Bookworm / Debian 11 Bullseye 推奨)
-- **開発ツール**:
-  - C コンパイラ (GCC 10 以上 / Clang 10 以上、C11 対応)
-  - C++ コンパイラ (GCC 10 以上 / Clang 10 以上、C++20 対応)
+- **コンパイラ**: GCC 10 以上 または Clang 10 以上（C11 および C++20 対応）
 
----
-
-## 依存パッケージのインストール
-
-Raspberry Pi 上で以下のコマンドを実行し、必要な開発用ライブラリを導入します。
+### 依存パッケージのインストール
 
 ```bash
 sudo apt update
@@ -59,214 +39,49 @@ cmake -B build
 cmake --build build
 ```
 
-ビルド完了後、`build/rubuscam` が生成されます。
-
-### 方法 2: Makefile を使用する場合 (シンプルビルド)
+### 方法 2: Makefile を使用する場合
 
 ```bash
 make
 ```
 
-`build/rubuscam` に実行ファイルが生成されます。
+いずれの方法でも、ビルド完了後に `build/rubuscam` が生成されます。
 
 ---
 
-## 使い方
-
-以下のコマンドでアプリケーションを起動します。
+## クイックスタート
 
 ```bash
-# デフォルト起動 (DCIM/100_PICA/IMG_0001.JPG 形式)
+# 通常起動 (DCIM/100_PICA/IMG_0001.JPG 形式で保存)
 ./build/rubuscam
 
-# 日付別フォルダモード (DCIM/YYYYMMDD/IMG_0001.JPG 形式) で起動する場合
+# 日付別フォルダモード (DCIM/YYYYMMDD/IMG_0001.JPG 形式) で起動
 ./build/rubuscam --date-dir
 ```
 
-### キーボード操作
+### 基本操作（抜粋）
 
-#### 撮影（ライブビュー）モード
+| 操作 | キーボード | タッチパネル / マウス |
+| :--- | :--- | :--- |
+| **静止画撮影** | `Space` | 右中央の **`[ SHOT ]`** ボタンをタップ |
+| **オートフォーカス** | `F` | **`[ AF [F] ]`** ボタン、またはプレビュー画面の任意の位置をタップ（タッチAF） |
+| **撮影設定の変更** | `I` (ISO), `S` (SS), `W` (WB), `Up`/`Down` (EV) 等 | 左上の **`[ Settings ]`** を開いて各項目をタップ / ホイール回転 |
+| **再生・ギャラリー** | `P` | 右下の **`[ Play [P] ]`** ボタンをタップ |
+| **設定リセット** | `R` | 左上の **`[ Reset [R] ]`** ボタンをタップ |
+| **終了** | `Q` または `Ctrl + C` | 右上の **`[ Quit [Q] ]`** ボタンをタップ |
 
-| キー | 動作 |
-| :--- | :--- |
-| **`Space`** | 高解像度静止画を非同期撮影・保存します (`DCIM/100_PICA/IMG_0001.JPG` 等) |
-| **`P`** | 再生・ギャラリーモードに切り替えます (ズーム/パン、3x3・4x4一覧、削除、プロテクト保護) |
-| **`F`** | オートフォーカスを再調整します (ワンショットAF / AF対応カメラのみ) |
-| **`Up` / `Down`** または **`]` / `[`** | 露出補正 (`-3.0 EV` 〜 `+3.0 EV`、`1/3 EV` ステップ) |
-| **`I`** / **`Shift + I`** | ISO感度を切り替え (`Auto / 100 / 200 / 400 / 800 / 1600 / 3200`) |
-| **`S`** / **`Shift + S`** または **`Right` / `Left`** | シャッタースピードを切り替え (`Auto / 1/2000s 〜 2.0s`) |
-| **`W`** / **`Shift + W`** | ホワイトバランスを切り替え (`Auto / Daylight / Cloudy / Shade / Tungsten / Fluorescent / Manual K`) |
-| **`K`** / **`Shift + K`** | 色温度 (K値) を手動調整 (`2500K 〜 10000K`、`500K` ステップ) |
-| **`L`** | AWBロックを切り替え (現在の色合いでホワイトバランスを固定 / 解除) |
-| **`M`** / **`Shift + M`** | 測光モードを切り替え (`評価測光 Matrix / 中央重点 CenterWeighted / スポット Spot`) |
-| **`J`** / **`Shift + J`** | JPEG保存品質を切り替え (`SuperFine 98% / Fine 90% / Normal 80%`) |
-| **`R`** | 露出・WB・測光・画質設定をすべてデフォルトにリセット (`EV: 0.0`, `ISO: Auto`, `SS: Auto`, `WB: Auto`, `Met: Matrix`, `JPG: Fine 90%`) |
-| **`Q`** | アプリケーションを終了します |
-| **`Ctrl + C`** | コンソールからの割り込み終了（リソースを安全に解放して終了します） |
-
-#### クイックレビュー（撮影直後プレビュー）モード
-
-| キー | 動作 |
-| :--- | :--- |
-| **`Delete` / `Backspace` / `D`** | 直前に撮影した画像を即座にキャンセル・削除してライブビューへ戻ります |
-| **`L`** | 直前に撮影した画像のプロテクト（保護）を ON / OFF します |
-| **`P`** / **`Left` / `Right`** / **`Z` / `+`** | そのまま再生・ギャラリーモードへ移行します |
-| **`Space` / `Enter` / `Esc`** | クイックレビューを終了して即座にライブビューへ戻ります |
-
-#### 再生・ギャラリーモード
-
-| キー | 動作 |
-| :--- | :--- |
-| **`Left` / `Right`** | 前後の写真へ移動（ズーム中は左右パン移動、グリッド表示中はカーソル移動） |
-| **`Up` / `Down`** | ズーム中の上下パン移動、グリッド表示中の上下カーソル移動 |
-| **`PageUp` / `PageDown`** | グリッド表示中のページ送り / ページ戻し |
-| **`Z`** または **`+` / `-`** | 拡大ズーム切り替え (`1x` ⇔ `2x` ⇔ `4x` ⇔ `8x`、`1x` から `-` で 3x3 グリッドへ移行) |
-| **`0`** | ズーム倍率を `1x`（全体表示）にリセット |
-| **`G`** | 表示モードを切り替え (`1枚表示` → `3x3 グリッド` → `4x4 グリッド`) |
-| **`I`** | 詳細 Exif / メタデータ情報パネルの表示 / 非表示を切り替え |
-| **`L`** | 選択中の画像のプロテクト（読み取り専用・誤削除防止）を ON / OFF |
-| **`Delete` / `Backspace` / `D`** | 削除確認ダイアログを開く（`1枚削除` / `未保護の全写真を削除` / `キャンセル`） |
-| **`P` / `Space` / `Esc`** | ライブビュー（撮影モード）へ戻ります（ズーム中・グリッド表示中の `Esc` は1枚等倍表示へ戻ります） |
+> 全モードのキーボードショートカット一覧、タッチ・マウス操作の詳細、解像度のカスタマイズ方法については **[ユーザーガイド (docs/USER_GUIDE.md)](docs/USER_GUIDE.md)** を参照してください。
 
 ---
 
-### タッチパネル・マウス操作
+## ドキュメント一覧
 
-キーボード操作に加えて、すべてのモードでタッチパネル（タップ・スワイプ・ドラッグ）およびマウス（左クリック・右クリック・ドラッグ・マウスホイール）による直感的なGUI操作に対応しています。マウスを動かすとカーソルが自動表示され、タッチ操作時または3秒間無操作が続くと自動で非表示になります。
-
-#### 撮影（ライブビュー）モード
-- **右端フローティング操作ボタン**:
-  - **`[ Quit [Q] ]`**（右上）: アプリケーションを終了します。
-  - **`[ SHOT ]`**（右中央）: タップ / クリックで高解像度静止画を非同期撮影します。
-  - **`[ AF [F] ]`**（シャッターボタンの直下に配置、AF対応カメラのみ）: ワンショットAFを実行し、合焦状態（`AF...` / `AF OK`）を表示します。
-  - **`[ Play [P] ]`**（右下）: 再生・ギャラリーモードへ切り替えます。
-- **左上 設定表示切替ボタン**:
-  - **`[ Settings ]`**: 撮影設定カラム（および `[ Reset [R] ]` ボタン）の**表示 / 非表示**を切り替えます。初期状態では非表示になっており、プレビュー映像を広く確認できます。
-  - **`[ Reset [R] ]`**（設定表示中のみ表示）: 露出・WB・測光・画質設定をデフォルトにリセットします。
-- **左端インタラクティブ撮影設定カラム（`[ Settings ]` ON 時に縦並び表示）**:
-  - **`[SS:...]` / `[ISO:...]` / `[EV:...]` / `[WB:...]` / `[K:...K]` / `[Met:...]` / `[JPG:...]`**: 画面左端に縦並びで配置され、タップ / 左クリックすると右隣に**ポップアップ選択パネル**が開き、プリセット選択や `[-]` `[+]` ステッパー操作が可能です。
-  - **`[AWB:Free / AWB:LOCK]`**: タップ / クリックで即座に AWB ロックの ON / OFF を切り替えます。
-  - **マウスホイール / 右クリック操作**: 左端の撮影設定ボタンの上にマウスカーソルを合わせてホイールを回転（または右クリックで逆送り）すると、ポップアップを開かずに直接設定値を増減できます。
-- **タッチAF（プレビュー映像領域タップ）**:
-  - ボタン以外のプレビュー映像の任意の場所をタップ / クリックすると、その位置に **AFターゲット枠** を表示し、指定座標でのスポットAF（`AfWindows` 対応カメラ時）を非ブロッキング実行します。
-
-#### クイックレビュー（撮影直後プレビュー）モード
-- **`[ Delete [Del] ]`**: 直前に撮影した画像を即座に破棄してライブビューへ戻ります。
-- **`[ Protect [L] ]`**: 直前に撮影した画像のプロテクト保護を ON / OFF します。
-- **`[ Playback [P] ]`**: そのまま再生・ギャラリーモードへ移行します。
-- **`[ Live View [Space] ]`**（または画像領域のタップ）: クイックレビューを終了して即座にライブビューへ戻ります。
-
-#### 再生・ギャラリーモード
-- **1枚表示モード**:
-  - **上部ツールバー**: `[ Live [P] ]`, `[ Grid [G] ]`, `[ Zoom+ [+] ]`, `[ Zoom- [-] ]`, `[ 1:1 [0] ]`, `[ Info [I] ]`, `[ Lock [L] ]`, `[ Delete [Del] ]` をタップして各機能を実行できます。
-  - **写真送り（等倍 `1x` 表示時）**: 画面左右端の **`[ < ]` / `[ > ]`** ボタンのタップ、または画面の**左右スワイプ（ドラッグ）**で前後の写真へ移動します。
-  - **拡大・縮小・パン移動**:
-    - 画像上を**ダブルタップ（ダブルクリック）**または**マウスホイール回転**すると、その位置を中心に拡大（`2x / 4x / 8x`）・縮小します。
-    - 拡大中は**画面ドラッグ**で自由に表示位置をパン移動できるほか、右下の **PiP ナビマップ内をタップ / ドラッグ**して目的の位置へ即座にジャンプできます。
-- **サムネイル一覧モード (`3x3` / `4x4` グリッド)**:
-  - **サムネイルの1回タップ / クリック**: タップした写真を選択して**即座に1枚表示（等倍ビュー）を開きます**。
-  - **ページ切り替え**: 画面左右端（高さ中央）の **`[ < ]` / `[ > ]`** ボタン、**上下/左右スワイプ**、または**マウスホイール**でページを移動できます。
-- **削除確認ダイアログ**:
-  - モーダル内の各選択肢（`[1] Delete Current Photo`, `[2] Delete All Unprotected Photos`, `[3] Cancel`）を直接タップ / クリックして実行できます（ダイアログ外をタップするとキャンセルになります）。
-
----
-
-## ディレクトリ構成
-
-```text
-RubusCam/
-├── CMakeLists.txt             # CMake ビルド設定 (C & C++ 混在ビルド)
-├── Makefile                   # 簡易 make ビルド設定 (gcc + g++)
-├── LICENSE                    # MIT ライセンス
-├── README.md                  # 本ドキュメント
-├── TODO.md                    # 機能拡張ロードマップ
-├── include/
-│   ├── async_save_queue.h     # 非同期 JPEG エンコード & バックグラウンド保存キュー宣言
-│   ├── camera_stream.h        # libcamera ラッパー関数の C 向け公開ヘッダー (extern "C")
-│   ├── dcf_storage.h          # DCF 準拠ディレクトリ・連番ファイル管理・残容量確認・メディア走査ヘッダー
-│   ├── exif_writer.h          # Exif 2.3 (APP1) セグメント生成・JPEG 注入ヘッダー
-│   ├── live_ui.h              # ライブビュー撮影 UI・ポップアップ設定・タッチAF管理ヘッダー
-│   ├── playback_manager.h     # クイックレビュー・再生ギャラリー・ズーム/グリッド/削除管理ヘッダー
-│   └── text_renderer.h        # SDL2_ttf 用テキスト・ボタン・パネル描画 & 共通UIユーティリティ宣言
-└── src/
-    ├── main.c                 # アプリケーションエントリポイント & SDL2 イベント/レンダリングループ (C言語)
-    ├── async_save_queue.c     # 非同期保存ワーカースレッド & キュー管理実装 (C言語)
-    ├── camera_stream.cpp      # libcamera 制御実装 & extern "C" ラッパー関数群 (C++)
-    ├── dcf_storage.c          # DCF フォルダ自動生成・連番採番・statvfs 残容量チェック・ファイル削除/保護実装 (C言語)
-    ├── exif_writer.c          # TIFF IFD / Exif 2.3 バイナリ構築 & アトミック保存実装 (C言語)
-    ├── live_ui.c              # ライブビュー撮影 UI・設定カラム/ポップアップ・タッチAF制御実装 (C言語)
-    ├── playback_manager.c     # 再生モード・クイックレビュー・Exif パーサ・サムネイル一覧実装 (C言語)
-    └── text_renderer.c        # SDL2_ttf テキストキャッシュ・ボタン・パネル描画実装 (C言語)
-```
-
----
-
-## libcamera ラッパー関数 API 一覧 (`camera_stream.h`)
-
-C言語側からは以下の `extern "C"` 関数を通じてカメラを操作できます。
-
-```c
-CameraStream *camera_stream_create(void);
-void camera_stream_destroy(CameraStream *cam);
-
-void camera_stream_set_still_size(CameraStream *cam, int still_width, int still_height);
-bool camera_stream_init(CameraStream *cam, int width, int height);
-bool camera_stream_start(CameraStream *cam);
-void camera_stream_stop(CameraStream *cam);
-
-bool camera_stream_is_af_supported(const CameraStream *cam);
-const char *camera_stream_get_model_name(const CameraStream *cam);
-
-int camera_stream_get_width(const CameraStream *cam);
-int camera_stream_get_height(const CameraStream *cam);
-int camera_stream_get_stride(const CameraStream *cam);
-size_t camera_stream_get_frame_size(const CameraStream *cam);
-bool camera_stream_is_bgr(const CameraStream *cam);
-
-int camera_stream_get_still_width(const CameraStream *cam);
-int camera_stream_get_still_height(const CameraStream *cam);
-
-bool camera_stream_get_latest_frame(CameraStream *cam, uint8_t *out_buffer, size_t buffer_size, uint64_t *out_sequence);
-
-bool camera_stream_set_ev(CameraStream *cam, float ev);
-bool camera_stream_set_iso(CameraStream *cam, int iso);
-bool camera_stream_set_shutter_speed(CameraStream *cam, int32_t exposure_time_us);
-bool camera_stream_set_wb_mode(CameraStream *cam, CameraWbMode mode);
-bool camera_stream_set_wb_kelvin(CameraStream *cam, int kelvin);
-bool camera_stream_set_awb_lock(CameraStream *cam, bool locked);
-bool camera_stream_set_metering_mode(CameraStream *cam, CameraMeteringMode mode);
-void camera_stream_get_exposure_status(const CameraStream *cam, CameraExposureStatus *out_status);
-
-bool camera_stream_trigger_af(CameraStream *cam);
-bool camera_stream_trigger_touch_af(CameraStream *cam, float norm_x, float norm_y);
-CameraAfStatus camera_stream_get_af_status(const CameraStream *cam);
-
-bool camera_stream_request_still(CameraStream *cam);
-bool camera_stream_is_still_pending(const CameraStream *cam);
-bool camera_stream_poll_captured_still(CameraStream *cam, CameraCapturedStill *out_still);
-```
-
----
-
-## カスタマイズ
-
-解像度を変更したい場合は、[`src/main.c`](src/main.c) 内の以下の値を変更して再ビルドしてください。
-
-```c
-const int screen_width = 800;
-const int screen_height = 480;
-```
-
-フレームレートを調整する場合は、メインループ内の `target_frame_time_ms`（デフォルト: `1000 / 30`）を変更します。
-
----
-
-## 今後の機能拡張ロードマップ
-
-デジタルスチルカメラ (DSC) としての機能拡張一覧および実装計画については、[TODO.md](TODO.md) を参照してください。
+- **[ユーザーガイド (`docs/USER_GUIDE.md`)](docs/USER_GUIDE.md)**: 起動オプション、全モードのキーボード操作表、タッチ・マウス GUI 操作方法、DCF 保存仕様、カスタマイズ方法
+- **[アーキテクチャ & 内部設計 (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md)**: ディレクトリ構成、各モジュールの役割、非同期保存スレッドモデル、`camera_stream.h` C API リファレンス
+- **[機能実装ロードマップ (`docs/TODO.md`)](docs/TODO.md)**: デジタルスチルカメラ (DSC) としての実装状況および今後の拡張計画
 
 ---
 
 ## ライセンス
 
-MIT License
+[MIT License](LICENSE)
