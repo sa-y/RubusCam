@@ -71,6 +71,47 @@ static const MeteringPreset METERING_PRESETS[] = {
 static const int METERING_PRESET_COUNT =
     (int)(sizeof(METERING_PRESETS) / sizeof(METERING_PRESETS[0]));
 
+typedef struct GridPreset {
+  LiveGridMode mode;
+  const char *name;
+  const char *hud_label;
+  const char *popup_label;
+} GridPreset;
+
+static const GridPreset GRID_PRESETS[] = {
+    {LIVE_GRID_OFF, "Off (非表示)", "Off", "Off"},
+    {LIVE_GRID_THIRDS, "Rule of Thirds (三分割グリッド)", "3x3",
+     "3x3 (Thirds)"},
+    {LIVE_GRID_GOLDEN, "Golden Ratio (黄金比グリッド)", "Golden",
+     "Phi (Golden)"},
+    {LIVE_GRID_CROSSHAIR, "Center Crosshair (十字センターマーク)", "Cross",
+     "Cross (+)"},
+    {LIVE_GRID_THIRDS_CROSS, "3x3 + Crosshair (三分割 + 十字マーク)",
+     "3x3+Cross", "3x3 + Cross"},
+};
+static const int GRID_PRESET_COUNT =
+    (int)(sizeof(GRID_PRESETS) / sizeof(GRID_PRESETS[0]));
+
+typedef struct AspectPreset {
+  LiveAspectMask mask;
+  int aspect_w;
+  int aspect_h;
+  const char *name;
+  const char *hud_label;
+  const char *popup_label;
+} AspectPreset;
+
+static const AspectPreset ASPECT_PRESETS[] = {
+    {LIVE_ASPECT_NATIVE, 0, 0, "Native (センサー全域)", "Native",
+     "Native (Full)"},
+    {LIVE_ASPECT_16_9, 16, 9, "16:9 (ワイド)", "16:9", "16:9"},
+    {LIVE_ASPECT_4_3, 4, 3, "4:3 (スタンダード)", "4:3", "4:3"},
+    {LIVE_ASPECT_3_2, 3, 2, "3:2 (35mmフィルム比)", "3:2", "3:2"},
+    {LIVE_ASPECT_1_1, 1, 1, "1:1 (スクエア)", "1:1", "1:1"},
+};
+static const int ASPECT_PRESET_COUNT =
+    (int)(sizeof(ASPECT_PRESETS) / sizeof(ASPECT_PRESETS[0]));
+
 static bool live_btn_hovered(const LiveUiController *ui, const SDL_Rect *r) {
   return ui && ui_rect_contains(r, ui->pointer_x, ui->pointer_y);
 }
@@ -177,6 +218,20 @@ static void live_ui_set_quality_index(LiveUiController *ui, int idx) {
          JPEG_QUALITY_PRESETS[ui->quality_preset_index].name);
 }
 
+static void live_ui_set_grid_index(LiveUiController *ui, int idx) {
+  ui->grid_mode_index =
+      (idx % GRID_PRESET_COUNT + GRID_PRESET_COUNT) % GRID_PRESET_COUNT;
+  printf("[-] 構図ガイドグリッド: %s\n",
+         GRID_PRESETS[ui->grid_mode_index].name);
+}
+
+static void live_ui_set_aspect_index(LiveUiController *ui, int idx) {
+  ui->aspect_mask_index =
+      (idx % ASPECT_PRESET_COUNT + ASPECT_PRESET_COUNT) % ASPECT_PRESET_COUNT;
+  printf("[-] アスペクト比マスク (撮影クロップ連動): %s\n",
+         ASPECT_PRESETS[ui->aspect_mask_index].name);
+}
+
 static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
   ui->ev_step_index = 0;
   ui->iso_preset_index = 0;
@@ -186,6 +241,8 @@ static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
   ui->awb_locked = false;
   ui->metering_preset_index = 0;
   ui->quality_preset_index = 1;
+  ui->grid_mode_index = 0;
+  ui->aspect_mask_index = 0;
   ui->active_popup = LIVE_POPUP_NONE;
   ui->af_box_visible = false;
   camera_stream_set_ev(camera, 0.0f);
@@ -197,9 +254,140 @@ static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
   if (camera_stream_is_af_supported(camera)) {
     camera_stream_trigger_af(camera);
   }
-  printf("[-] 露出・WB・測光・画質設定をリセットしました (EV: 0.0, ISO: Auto, "
-         "SS: Auto, WB: Auto, Met: Matrix, JPG: %s)\n",
+  printf("[-] 露出・WB・測光・画質・構図設定をリセットしました (EV: 0.0, ISO: "
+         "Auto, SS: Auto, WB: Auto, Met: Matrix, JPG: %s, Grid: Off, Aspect: "
+         "Native)\n",
          JPEG_QUALITY_PRESETS[ui->quality_preset_index].name);
+}
+
+static void render_aspect_mask(SDL_Renderer *renderer, LiveUiController *ui) {
+  if (!renderer || !ui) {
+    return;
+  }
+
+  ui->active_frame_rect = ui->viewport_rect;
+  if (ui->viewport_rect.w <= 0 || ui->viewport_rect.h <= 0 ||
+      ui->aspect_mask_index <= 0 ||
+      ui->aspect_mask_index >= ASPECT_PRESET_COUNT) {
+    return;
+  }
+
+  int aspect_w = ASPECT_PRESETS[ui->aspect_mask_index].aspect_w;
+  int aspect_h = ASPECT_PRESETS[ui->aspect_mask_index].aspect_h;
+  if (aspect_w <= 0 || aspect_h <= 0) {
+    return;
+  }
+
+  ui_calc_aspect_fit_rect(aspect_w, aspect_h, &ui->viewport_rect,
+                          &ui->active_frame_rect);
+
+  const SDL_Rect *vp = &ui->viewport_rect;
+  const SDL_Rect *af = &ui->active_frame_rect;
+
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 175);
+
+  /* Top letterbox bar */
+  if (af->y > vp->y) {
+    SDL_Rect top_bar = {vp->x, vp->y, vp->w, af->y - vp->y};
+    SDL_RenderFillRect(renderer, &top_bar);
+  }
+  /* Bottom letterbox bar */
+  int af_bottom = af->y + af->h;
+  int vp_bottom = vp->y + vp->h;
+  if (af_bottom < vp_bottom) {
+    SDL_Rect bot_bar = {vp->x, af_bottom, vp->w, vp_bottom - af_bottom};
+    SDL_RenderFillRect(renderer, &bot_bar);
+  }
+  /* Left pillarbox bar */
+  if (af->x > vp->x) {
+    SDL_Rect left_bar = {vp->x, af->y, af->x - vp->x, af->h};
+    SDL_RenderFillRect(renderer, &left_bar);
+  }
+  /* Right pillarbox bar */
+  int af_right = af->x + af->w;
+  int vp_right = vp->x + vp->w;
+  if (af_right < vp_right) {
+    SDL_Rect right_bar = {af_right, af->y, vp_right - af_right, af->h};
+    SDL_RenderFillRect(renderer, &right_bar);
+  }
+
+  /* Subtle frame border around active aspect area */
+  SDL_SetRenderDrawColor(renderer, 200, 220, 240, 150);
+  SDL_RenderDrawRect(renderer, af);
+}
+
+static void draw_guide_line(SDL_Renderer *renderer, int x1, int y1, int x2,
+                            int y2, SDL_Color fg) {
+  int sx_off = (x1 == x2) ? 1 : 0;
+  int sy_off = (y1 == y2) ? 1 : ((x1 != x2) ? 1 : 0);
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 145);
+  SDL_RenderDrawLine(renderer, x1 + sx_off, y1 + sy_off, x2 + sx_off,
+                     y2 + sy_off);
+  SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, fg.a);
+  SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+}
+
+static void render_composition_grid(SDL_Renderer *renderer,
+                                    const LiveUiController *ui) {
+  if (!renderer || !ui || ui->grid_mode_index <= 0 ||
+      ui->grid_mode_index >= GRID_PRESET_COUNT) {
+    return;
+  }
+
+  const SDL_Rect *frame = (ui->active_frame_rect.w > 0 &&
+                           ui->active_frame_rect.h > 0)
+                              ? &ui->active_frame_rect
+                              : &ui->viewport_rect;
+  if (frame->w <= 8 || frame->h <= 8) {
+    return;
+  }
+
+  LiveGridMode mode = GRID_PRESETS[ui->grid_mode_index].mode;
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+  if (mode == LIVE_GRID_THIRDS || mode == LIVE_GRID_THIRDS_CROSS) {
+    SDL_Color fg = {255, 255, 255, 175};
+    int x1 = frame->x + frame->w / 3;
+    int x2 = frame->x + (frame->w * 2) / 3;
+    int y1 = frame->y + frame->h / 3;
+    int y2 = frame->y + (frame->h * 2) / 3;
+
+    draw_guide_line(renderer, x1, frame->y, x1, frame->y + frame->h - 1, fg);
+    draw_guide_line(renderer, x2, frame->y, x2, frame->y + frame->h - 1, fg);
+    draw_guide_line(renderer, frame->x, y1, frame->x + frame->w - 1, y1, fg);
+    draw_guide_line(renderer, frame->x, y2, frame->x + frame->w - 1, y2, fg);
+  } else if (mode == LIVE_GRID_GOLDEN) {
+    /* Golden ratio conjugate: 1 / (1 + phi) ≈ 0.381966f, phi / (1 + phi) ≈
+     * 0.618034f */
+    SDL_Color fg = {255, 225, 130, 185};
+    int x1 = frame->x + (int)((float)frame->w * 0.381966f + 0.5f);
+    int x2 = frame->x + (int)((float)frame->w * 0.618034f + 0.5f);
+    int y1 = frame->y + (int)((float)frame->h * 0.381966f + 0.5f);
+    int y2 = frame->y + (int)((float)frame->h * 0.618034f + 0.5f);
+
+    draw_guide_line(renderer, x1, frame->y, x1, frame->y + frame->h - 1, fg);
+    draw_guide_line(renderer, x2, frame->y, x2, frame->y + frame->h - 1, fg);
+    draw_guide_line(renderer, frame->x, y1, frame->x + frame->w - 1, y1, fg);
+    draw_guide_line(renderer, frame->x, y2, frame->x + frame->w - 1, y2, fg);
+  }
+
+  if (mode == LIVE_GRID_CROSSHAIR || mode == LIVE_GRID_THIRDS_CROSS) {
+    SDL_Color fg = {255, 255, 255, 215};
+    int cx = frame->x + frame->w / 2;
+    int cy = frame->y + frame->h / 2;
+    int arm = 24;
+    int gap = 6;
+
+    draw_guide_line(renderer, cx - arm, cy, cx - gap, cy, fg);
+    draw_guide_line(renderer, cx + gap, cy, cx + arm, cy, fg);
+    draw_guide_line(renderer, cx, cy - arm, cx, cy - gap, fg);
+    draw_guide_line(renderer, cx, cy + gap, cx, cy + arm, fg);
+
+    /* Center point tick */
+    draw_guide_line(renderer, cx - 1, cy, cx + 1, cy, fg);
+    draw_guide_line(renderer, cx, cy - 1, cx, cy + 1, fg);
+  }
 }
 
 static void live_ui_request_shutter(CameraStream *camera,
@@ -307,14 +495,16 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
     return;
   }
 
-  /* Determine right edge of the left vertical settings column across all 8
+  /* Determine right edge of the left vertical settings column across all 10
    * buttons */
-  const SDL_Rect *left_btns[8] = {
-      &ui->hud_btn_ss,   &ui->hud_btn_iso,  &ui->hud_btn_ev,  &ui->hud_btn_wb,
-      &ui->hud_btn_temp, &ui->hud_btn_lock, &ui->hud_btn_met, &ui->hud_btn_qual,
+  const SDL_Rect *left_btns[10] = {
+      &ui->hud_btn_ss,   &ui->hud_btn_iso,  &ui->hud_btn_ev,
+      &ui->hud_btn_wb,   &ui->hud_btn_temp, &ui->hud_btn_lock,
+      &ui->hud_btn_met,  &ui->hud_btn_qual, &ui->hud_btn_grid,
+      &ui->hud_btn_aspect,
   };
   int left_col_right = 152;
-  for (int i = 0; i < 8; ++i) {
+  for (int i = 0; i < 10; ++i) {
     int r_edge = left_btns[i]->x + left_btns[i]->w;
     if (r_edge > left_col_right) {
       left_col_right = r_edge;
@@ -362,6 +552,14 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
   case LIVE_POPUP_QUAL:
     title = "JPEG Quality [J]";
     anchor_y = ui->hud_btn_qual.y;
+    break;
+  case LIVE_POPUP_GRID:
+    title = "Composition Guide Grid [G]";
+    anchor_y = ui->hud_btn_grid.y;
+    break;
+  case LIVE_POPUP_ASPECT:
+    title = "Aspect Ratio (Mask & Crop) [A]";
+    anchor_y = ui->hud_btn_aspect.y;
     break;
   default:
     break;
@@ -507,6 +705,30 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
       it->target_rect = &ui->popup_opt_rects[i];
       it->force_new_row = false;
     }
+  } else if (ui->active_popup == LIVE_POPUP_GRID) {
+    ui->popup_opt_count = GRID_PRESET_COUNT;
+    for (int i = 0; i < GRID_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s",
+               GRID_PRESETS[i].popup_label);
+      it->min_w = 104;
+      it->style = (ui->grid_mode_index == i) ? UI_BTN_STYLE_ACTIVE
+                                             : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
+  } else if (ui->active_popup == LIVE_POPUP_ASPECT) {
+    ui->popup_opt_count = ASPECT_PRESET_COUNT;
+    for (int i = 0; i < ASPECT_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s",
+               ASPECT_PRESETS[i].popup_label);
+      it->min_w = 96;
+      it->style = (ui->aspect_mask_index == i) ? UI_BTN_STYLE_ACTIVE
+                                               : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
   }
 
   /* Pass 1: Compute wrapped relative button positions within max_panel_w */
@@ -627,6 +849,12 @@ static void handle_live_wheel_or_step(LiveUiController *ui,
   } else if (ui_rect_contains(&ui->hud_btn_qual, px, py) ||
              ui->active_popup == LIVE_POPUP_QUAL) {
     live_ui_set_quality_index(ui, ui->quality_preset_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_grid, px, py) ||
+             ui->active_popup == LIVE_POPUP_GRID) {
+    live_ui_set_grid_index(ui, ui->grid_mode_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_aspect, px, py) ||
+             ui->active_popup == LIVE_POPUP_ASPECT) {
+    live_ui_set_aspect_index(ui, ui->aspect_mask_index + dir);
   } else {
     /* Default wheel action on live viewfinder: adjust EV compensation */
     live_ui_step_ev(ui, camera, dir);
@@ -666,7 +894,11 @@ void live_ui_print_help(const CameraStream *camera) {
          "/ スポット Spot)\n");
   printf(" [J / Shift+J]  : JPEG保存画質切替 (SuperFine 98%% / Fine 90%% / "
          "Normal 80%%)\n");
-  printf(" [R]            : 露出・WB・測光・画質設定をデフォルトにリセット\n");
+  printf(" [G / Shift+G]  : 構図ガイドグリッド切替 (Off / 三分割 / 黄金比 / "
+         "十字 / 三分割+十字)\n");
+  printf(" [A / Shift+A]  : アスペクト比マスク&クロップ切替 (Native / 16:9 / "
+         "4:3 / 3:2 / 1:1)\n");
+  printf(" [R]            : 露出・WB・測光・画質・構図設定をデフォルトにリセット\n");
   printf(" [Q]            : アプリを終了\n");
   printf("=========================================\n");
 }
@@ -677,6 +909,65 @@ int live_ui_get_jpeg_quality(const LiveUiController *ui) {
     return 90;
   }
   return JPEG_QUALITY_PRESETS[ui->quality_preset_index].quality;
+}
+
+void live_ui_apply_aspect_crop(const LiveUiController *ui,
+                               CameraCapturedStill *still) {
+  if (!ui || !still || !still->data || still->width <= 0 ||
+      still->height <= 0) {
+    return;
+  }
+  if (ui->aspect_mask_index <= 0 ||
+      ui->aspect_mask_index >= ASPECT_PRESET_COUNT) {
+    return;
+  }
+
+  int aspect_w = ASPECT_PRESETS[ui->aspect_mask_index].aspect_w;
+  int aspect_h = ASPECT_PRESETS[ui->aspect_mask_index].aspect_h;
+  if (aspect_w <= 0 || aspect_h <= 0) {
+    return;
+  }
+
+  SDL_Rect full_bounds = {0, 0, still->width, still->height};
+  SDL_Rect crop_rect = {0, 0, still->width, still->height};
+  ui_calc_aspect_fit_rect(aspect_w, aspect_h, &full_bounds, &crop_rect);
+
+  /* Align cropped dimensions to even pixels for clean JPEG chroma subsampling */
+  int crop_w = crop_rect.w & ~1;
+  int crop_h = crop_rect.h & ~1;
+  if (crop_w < 2) {
+    crop_w = crop_rect.w;
+  }
+  if (crop_h < 2) {
+    crop_h = crop_rect.h;
+  }
+  int crop_x = (still->width - crop_w) / 2;
+  int crop_y = (still->height - crop_h) / 2;
+
+  if (crop_w <= 0 || crop_h <= 0 ||
+      (crop_w == still->width && crop_h == still->height)) {
+    return;
+  }
+
+  int src_stride = still->stride > 0 ? still->stride : (still->width * 3);
+  int dst_stride = crop_w * 3;
+
+  for (int y = 0; y < crop_h; ++y) {
+    const uint8_t *src_row = still->data +
+                             (size_t)(crop_y + y) * (size_t)src_stride +
+                             (size_t)crop_x * 3U;
+    uint8_t *dst_row = still->data + (size_t)y * (size_t)dst_stride;
+    if (dst_row != src_row) {
+      memmove(dst_row, src_row, (size_t)dst_stride);
+    }
+  }
+
+  still->width = crop_w;
+  still->height = crop_h;
+  still->stride = dst_stride;
+  still->size = (size_t)dst_stride * (size_t)crop_h;
+  printf("[-] アスペクト比クロップ適用 (%s): %dx%d\n",
+         ASPECT_PRESETS[ui->aspect_mask_index].hud_label, crop_w, crop_h);
 }
 
 bool live_ui_is_quit_requested(const LiveUiController *ui) {
@@ -692,7 +983,9 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
 
   bool af_supported = camera_stream_is_af_supported(camera);
 
-  /* 1. Touch AF reticle inside viewfinder */
+  /* 1. Aspect ratio mask, composition guide grid, and Touch AF reticle */
+  render_aspect_mask(renderer, ui);
+  render_composition_grid(renderer, ui);
   render_af_reticle(renderer, ui, camera);
 
   /* 2. Top action bar (Top-left: Settings [+ Reset], Top-right: Quit) */
@@ -792,6 +1085,8 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
     ui->hud_btn_lock = (SDL_Rect){0, 0, 0, 0};
     ui->hud_btn_met = (SDL_Rect){0, 0, 0, 0};
     ui->hud_btn_qual = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_grid = (SDL_Rect){0, 0, 0, 0};
+    ui->hud_btn_aspect = (SDL_Rect){0, 0, 0, 0};
     ui->active_popup = LIVE_POPUP_NONE;
     render_live_popup(renderer, ui, win_w, win_h);
     return;
@@ -799,14 +1094,14 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
 
   int bx = 12;
   int by = 56;
-  int bgap = 6;
   int avail_h = win_h - by - 10;
-  int bh = (avail_h - 7 * bgap) / 8;
+  int bgap = avail_h >= 440 ? 6 : 4;
+  int bh = (avail_h - 9 * bgap) / 10;
   if (bh > 40) {
     bh = 40;
   }
-  if (bh < 32) {
-    bh = 32;
+  if (bh < 28) {
+    bh = 28;
   }
   int bw = 156;
 
@@ -935,6 +1230,34 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
                             live_btn_hovered(ui, &ui->hud_btn_qual),
                             live_btn_pressed(ui, &ui->hud_btn_qual), &r);
   ui->hud_btn_qual = r;
+  by += r.h + bgap;
+
+  char grid_str[32];
+  snprintf(grid_str, sizeof(grid_str), "Grid:%s",
+           GRID_PRESETS[ui->grid_mode_index].hud_label);
+  text_renderer_draw_button(renderer, grid_str, bx, by, bw, bh,
+                            ui->active_popup == LIVE_POPUP_GRID
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (ui->grid_mode_index != 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_grid),
+                            live_btn_pressed(ui, &ui->hud_btn_grid), &r);
+  ui->hud_btn_grid = r;
+  by += r.h + bgap;
+
+  char asp_str[32];
+  snprintf(asp_str, sizeof(asp_str), "Aspect:%s",
+           ASPECT_PRESETS[ui->aspect_mask_index].hud_label);
+  text_renderer_draw_button(renderer, asp_str, bx, by, bw, bh,
+                            ui->active_popup == LIVE_POPUP_ASPECT
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (ui->aspect_mask_index != 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_aspect),
+                            live_btn_pressed(ui, &ui->hud_btn_aspect), &r);
+  ui->hud_btn_aspect = r;
 
   /* 5. Active parameter popup selector next to the left parameter column */
   render_live_popup(renderer, ui, win_w, win_h);
@@ -1017,6 +1340,15 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
   case SDLK_j:
     live_ui_set_quality_index(ui,
                               ui->quality_preset_index + (shift_held ? -1 : 1));
+    return true;
+
+  case SDLK_g:
+    live_ui_set_grid_index(ui, ui->grid_mode_index + (shift_held ? -1 : 1));
+    return true;
+
+  case SDLK_a:
+    live_ui_set_aspect_index(ui,
+                             ui->aspect_mask_index + (shift_held ? -1 : 1));
     return true;
 
   case SDLK_r:
@@ -1157,6 +1489,10 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
             live_ui_set_metering_index(ui, camera, i);
           } else if (ui->active_popup == LIVE_POPUP_QUAL) {
             live_ui_set_quality_index(ui, i);
+          } else if (ui->active_popup == LIVE_POPUP_GRID) {
+            live_ui_set_grid_index(ui, i);
+          } else if (ui->active_popup == LIVE_POPUP_ASPECT) {
+            live_ui_set_aspect_index(ui, i);
           }
           return;
         }
@@ -1247,6 +1583,16 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
     toggle_popup(ui, LIVE_POPUP_QUAL);
     return;
   }
+  if (ui_rect_contains(&ui->hud_btn_grid, x, y) &&
+      ui_rect_contains(&ui->hud_btn_grid, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_GRID);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_aspect, x, y) &&
+      ui_rect_contains(&ui->hud_btn_aspect, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_ASPECT);
+    return;
+  }
 
   /* 5. If popup was open and user tapped outside, close popup */
   if (ui->active_popup != LIVE_POPUP_NONE) {
@@ -1254,8 +1600,12 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
     return;
   }
 
-  /* 6. Tapping inside the camera preview viewport triggers Touch AF */
-  if (ui_rect_contains(&ui->viewport_rect, x, y) && abs(x - sx) < 24 &&
+  /* 6. Tapping inside the active camera preview frame triggers Touch AF */
+  const SDL_Rect *af_bounds =
+      (ui->active_frame_rect.w > 0 && ui->active_frame_rect.h > 0)
+          ? &ui->active_frame_rect
+          : &ui->viewport_rect;
+  if (ui_rect_contains(af_bounds, x, y) && abs(x - sx) < 24 &&
       abs(y - sy) < 24 && ui->viewport_rect.w > 0 && ui->viewport_rect.h > 0) {
     float nx = (float)(x - ui->viewport_rect.x) / (float)ui->viewport_rect.w;
     float ny = (float)(y - ui->viewport_rect.y) / (float)ui->viewport_rect.h;

@@ -25,14 +25,38 @@ typedef enum LivePopupType {
   LIVE_POPUP_WB = 4,
   LIVE_POPUP_TEMP = 5,
   LIVE_POPUP_MET = 6,
-  LIVE_POPUP_QUAL = 7
+  LIVE_POPUP_QUAL = 7,
+  LIVE_POPUP_GRID = 8,
+  LIVE_POPUP_ASPECT = 9
 } LivePopupType;
+
+/*
+ * Composition guide grid modes for the Live View viewfinder.
+ */
+typedef enum LiveGridMode {
+  LIVE_GRID_OFF = 0,          /* Grid hidden (default) */
+  LIVE_GRID_THIRDS = 1,       /* Rule of Thirds (3x3) grid */
+  LIVE_GRID_GOLDEN = 2,       /* Golden Ratio (Phi ~ 1:0.618:1) grid */
+  LIVE_GRID_CROSSHAIR = 3,    /* Center crosshair reticle */
+  LIVE_GRID_THIRDS_CROSS = 4  /* Rule of Thirds + Center crosshair */
+} LiveGridMode;
+
+/*
+ * Aspect ratio mask & crop presets for Live View and still capture.
+ */
+typedef enum LiveAspectMask {
+  LIVE_ASPECT_NATIVE = 0, /* Full sensor native aspect ratio (no mask/crop) */
+  LIVE_ASPECT_16_9 = 1,   /* 16:9 widescreen */
+  LIVE_ASPECT_4_3 = 2,    /* 4:3 standard */
+  LIVE_ASPECT_3_2 = 3,    /* 3:2 35mm classic */
+  LIVE_ASPECT_1_1 = 4     /* 1:1 square */
+} LiveAspectMask;
 
 /*
  * Live View UI, exposure/WB/metering/quality controls, and touch/mouse state.
  */
 typedef struct LiveUiController {
-  /* Exposure, WB, Metering & JPEG quality state indices */
+  /* Exposure, WB, Metering, JPEG quality, Grid & Aspect state indices */
   int ev_step_index; /* -9 (-3.0 EV) to +9 (+3.0 EV) in 1/3 EV increments */
   int iso_preset_index;
   int shutter_preset_index;
@@ -41,6 +65,8 @@ typedef struct LiveUiController {
   bool awb_locked;
   int metering_preset_index;
   int quality_preset_index;
+  int grid_mode_index;
+  int aspect_mask_index;
 
   /* Application quit requested via UI Quit button */
   bool quit_requested;
@@ -87,8 +113,11 @@ typedef struct LiveUiController {
   SDL_Rect hud_btn_lock;
   SDL_Rect hud_btn_met;
   SDL_Rect hud_btn_qual;
+  SDL_Rect hud_btn_grid;
+  SDL_Rect hud_btn_aspect;
 
   SDL_Rect viewport_rect;
+  SDL_Rect active_frame_rect;
 } LiveUiController;
 
 /*
@@ -105,6 +134,13 @@ void live_ui_print_help(const CameraStream *camera);
  * Return the currently selected JPEG encoding quality (1..100).
  */
 int live_ui_get_jpeg_quality(const LiveUiController *ui);
+
+/*
+ * Crop a captured still frame in-place to match the currently selected aspect
+ * ratio mask (no-op when LIVE_ASPECT_NATIVE is active).
+ */
+void live_ui_apply_aspect_crop(const LiveUiController *ui,
+                               CameraCapturedStill *still);
 
 /*
  * Return true if the user clicked the Quit button in the Live View UI.

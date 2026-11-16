@@ -399,6 +399,7 @@ int main(int argc, char *argv[]) {
     // background save queue
     CameraCapturedStill captured_still;
     if (camera_stream_poll_captured_still(camera, &captured_still)) {
+      live_ui_apply_aspect_crop(&live_ui, &captured_still);
       char filepath[512];
       if (dcf_storage_next_filepath(&dcf_storage, filepath, sizeof(filepath))) {
         // 1. Immediately start Quick Review from in-memory raw buffer (zero
