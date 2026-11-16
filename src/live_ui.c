@@ -232,6 +232,7 @@ static bool live_ui_cancel_active_drive(LiveUiController *ui,
   if (ui->burst_active || ui->burst_held_by_key || ui->burst_held_by_pointer) {
     ui->burst_active = false;
     ui->burst_held_by_key = false;
+    ui->burst_keyup_pending = false;
     ui->burst_held_by_pointer = false;
     if (camera) {
       camera_stream_set_burst_mode(camera, false);
@@ -1501,6 +1502,11 @@ void live_ui_update(LiveUiController *ui, CameraStream *camera,
 
   /* 2. Continuous Burst Mode management */
   if (ui->burst_active) {
+    if (ui->burst_held_by_key && ui->burst_keyup_pending &&
+        SDL_TICKS_PASSED(now, ui->burst_keyup_ms + 120U)) {
+      ui->burst_held_by_key = false;
+      ui->burst_keyup_pending = false;
+    }
     if (!ui->burst_held_by_key && !ui->burst_held_by_pointer) {
       live_ui_stop_burst(ui, camera);
     } else {
@@ -1560,12 +1566,13 @@ bool live_ui_on_still_captured(LiveUiController *ui, CameraStream *camera,
   /* 1. Burst Mode: count shot, click sound, suppress Quick Review while held */
   if (ui->burst_active ||
       DRIVE_PRESETS[ui->drive_mode_index].mode == LIVE_DRIVE_BURST) {
+    ui->burst_shot_count++;
+    live_ui_play_beep(ui, 1480.0f, 22, 0.16f);
+    printf("[-] 連写キャプチャ: %d 枚目\n", ui->burst_shot_count);
     if (ui->burst_active) {
-      ui->burst_shot_count++;
-      live_ui_play_beep(ui, 1480.0f, 22, 0.16f);
-      printf("[-] 連写キャプチャ: %d 枚目\n", ui->burst_shot_count);
       return false;
     }
+    return true;
   }
 
   /* 2. Interval Shooting: advance counter, suppress Quick Review until final
@@ -2172,16 +2179,19 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
     return true;
 
   case SDLK_SPACE:
-    if (key_event->repeat != 0) {
-      return true;
-    }
     ui->active_popup = LIVE_POPUP_NONE;
     if (DRIVE_PRESETS[ui->drive_mode_index].mode == LIVE_DRIVE_BURST) {
       ui->burst_held_by_key = true;
-      live_ui_start_burst(ui, camera, save_queue);
-    } else {
-      live_ui_request_shutter(ui, camera, save_queue);
+      ui->burst_keyup_pending = false;
+      if (!ui->burst_active) {
+        live_ui_start_burst(ui, camera, save_queue);
+      }
+      return true;
     }
+    if (key_event->repeat != 0) {
+      return true;
+    }
+    live_ui_request_shutter(ui, camera, save_queue);
     return true;
 
   default:
@@ -2191,15 +2201,14 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
 
 bool live_ui_handle_key_up(LiveUiController *ui, CameraStream *camera,
                            const SDL_KeyboardEvent *key_event) {
-  if (!ui || !camera || !key_event) {
+  (void)camera;
+  if (!ui || !key_event) {
     return false;
   }
   if (key_event->keysym.sym == SDLK_SPACE) {
     if (ui->burst_held_by_key) {
-      ui->burst_held_by_key = false;
-      if (!ui->burst_held_by_pointer) {
-        live_ui_stop_burst(ui, camera);
-      }
+      ui->burst_keyup_pending = true;
+      ui->burst_keyup_ms = SDL_GetTicks();
       return true;
     }
   }

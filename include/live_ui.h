@@ -94,6 +94,8 @@ typedef struct LiveUiController {
   /* Burst shooting runtime state */
   bool burst_active;
   bool burst_held_by_key;
+  bool burst_keyup_pending;
+  uint32_t burst_keyup_ms;
   bool burst_held_by_pointer;
   int burst_shot_count;
 
