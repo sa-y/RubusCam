@@ -18,7 +18,7 @@ extern "C" {
  * Directory organization mode under DCIM/ root.
  */
 typedef enum {
-  DCF_DIR_MODE_STANDARD = 0, /* Standard DCF: DCIM/100_PICA/IMG_0001.JPG */
+  DCF_DIR_MODE_STANDARD = 0, /* Standard DCF: DCIM/100RUBUS/IMG_0001.JPG */
   DCF_DIR_MODE_DATE = 1      /* Date-based:   DCIM/YYYYMMDD/IMG_0001.JPG */
 } DcfDirMode;
 
@@ -27,7 +27,7 @@ typedef enum {
  */
 typedef struct {
   char base_path[256];      /* Root directory path, e.g. "DCIM" */
-  char dir_suffix[6];       /* 5-char directory suffix, e.g. "_PICA" */
+  char dir_suffix[6];       /* 5-char directory suffix, e.g. "RUBUS" */
   char file_prefix[5];      /* 4-char file prefix, e.g. "IMG_" */
   DcfDirMode mode;          /* Directory naming mode */
   uint64_t min_free_bytes;  /* Minimum required free bytes on storage */
@@ -59,7 +59,7 @@ bool dcf_storage_get_free_space(const DcfStorage *dcf,
 /*
  * Verify sufficient free disk space, create target DCIM subdirectory if needed,
  * and generate the next non-colliding file path (e.g.
- * "DCIM/100_PICA/IMG_0001.JPG"). Returns true on success, false if disk space
+ * "DCIM/100RUBUS/IMG_0001.JPG"). Returns true on success, false if disk space
  * is low or limits are exhausted.
  */
 bool dcf_storage_next_filepath(DcfStorage *dcf, char *out_path,
@@ -76,8 +76,8 @@ void dcf_storage_resync(DcfStorage *dcf);
  */
 typedef struct {
   char
-      filepath[512]; /* Full relative path, e.g. "DCIM/100_PICA/IMG_0001.JPG" */
-  char display_name[512]; /* Short display name, e.g. "100_PICA/IMG_0001.JPG" */
+      filepath[512]; /* Full relative path, e.g. "DCIM/100RUBUS/IMG_0001.JPG" */
+  char display_name[512]; /* Short display name, e.g. "100RUBUS/IMG_0001.JPG" */
   char filename[256];     /* Base file name, e.g. "IMG_0001.JPG" */
   uint64_t file_size;     /* File size in bytes */
   int64_t mtime_sec;      /* Last modification time (epoch seconds) */
@@ -95,7 +95,7 @@ typedef struct {
 } DcfMediaList;
 
 /*
- * Scan all subdirectories under dcf->base_path (both standard NNN_PICA and
+ * Scan all subdirectories under dcf->base_path (both standard NNNRUBUS and
  * YYYYMMDD directories) and populate out_list with all .JPG/.JPEG files sorted
  * by directory name and file name.
  * Caller must free resources with dcf_storage_free_media_list().

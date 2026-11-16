@@ -217,7 +217,7 @@ bool dcf_storage_init(DcfStorage *dcf, const char *base_path, DcfDirMode mode) {
 
   const char *root = (base_path && base_path[0] != '\0') ? base_path : "DCIM";
   snprintf(dcf->base_path, sizeof(dcf->base_path), "%s", root);
-  snprintf(dcf->dir_suffix, sizeof(dcf->dir_suffix), "_PICA");
+  snprintf(dcf->dir_suffix, sizeof(dcf->dir_suffix), "RUBUS");
   snprintf(dcf->file_prefix, sizeof(dcf->file_prefix), "IMG_");
   dcf->mode = mode;
   dcf->min_free_bytes = DCF_DEFAULT_MIN_FREE_BYTES;

@@ -20,7 +20,7 @@
 ## 1. 起動方法とコマンドラインオプション
 
 ```bash
-# デフォルト起動 (DCIM/100_PICA/IMG_0001.JPG 形式で保存)
+# デフォルト起動 (DCIM/100RUBUS/IMG_0001.JPG 形式で保存)
 ./build/rubuscam
 
 # 日付別フォルダモード (DCIM/YYYYMMDD/IMG_0001.JPG 形式で保存)
@@ -147,7 +147,7 @@ RubusCam には以下の3つの動作モードがあり、シームレスに切�
 ## 5. ファイル保存・DCF管理仕様
 
 - **保存ディレクトリ構造**:
-  - 通常時: カメラ業界標準 (DCF: Design rule for Camera File system) に準拠した `DCIM/100_PICA/IMG_0001.JPG` 〜 `IMG_9999.JPG` に連番保存されます（9999 に達すると `101_PICA` へ自動繰り上がり）。
+  - 通常時: カメラ業界標準 (DCF: Design rule for Camera File system) に準拠した `DCIM/100RUBUS/IMG_0001.JPG` 〜 `IMG_9999.JPG` に連番保存されます（9999 に達すると `101RUBUS` へ自動繰り上がり）。
   - `--date-dir` 指定時: 撮影日ごとの `DCIM/YYYYMMDD/IMG_0001.JPG` に保存されます。
 - **空き容量チェック**: 撮影前に `statvfs` でストレージの空き容量を確認し、容量不足時は撮影をブロックして警告を表示します。
 - **Exif 2.3 メタデータ記録**: 撮影日時、カメラモデル名、シャッター速度、F値、ISO感度、露出補正値、焦点距離、ホワイトバランスを Exif APP1 (`0xFFE1`) ヘッダーとして自動記録します。

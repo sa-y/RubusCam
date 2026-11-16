@@ -247,7 +247,7 @@ int main(int argc, char *argv[]) {
   }
   ttf_inited = true;
 
-  // Initialize DCF storage manager (DCIM/100_PICA/IMG_0001.JPG or
+  // Initialize DCF storage manager (DCIM/100RUBUS/IMG_0001.JPG or
   // DCIM/YYYYMMDD/IMG_0001.JPG)
   DcfStorage dcf_storage;
   dcf_storage_init(&dcf_storage, "DCIM", dcf_mode);
@@ -255,7 +255,7 @@ int main(int argc, char *argv[]) {
   if (dcf_storage_get_free_space(&dcf_storage, &free_bytes)) {
     printf("[-] 保存先ストレージ空き容量: %.1f MiB (DCFモード: %s)\n",
            (double)free_bytes / (1024.0 * 1024.0),
-           dcf_mode == DCF_DIR_MODE_STANDARD ? "DCIM/NNN_PICA"
+           dcf_mode == DCF_DIR_MODE_STANDARD ? "DCIM/NNNRUBUS"
                                              : "DCIM/YYYYMMDD");
   }
 
