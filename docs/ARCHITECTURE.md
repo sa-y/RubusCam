@@ -154,11 +154,14 @@ bool camera_stream_trigger_touch_af(CameraStream *cam, float norm_x, float norm_
 CameraAfStatus camera_stream_get_af_status(const CameraStream *cam);
 ```
 
-### 3.6 高解像度静止画キャプチャ（非同期）
+### 3.6 高解像度静止画・連写キャプチャ（非同期）
 
 ```c
 bool camera_stream_request_still(CameraStream *cam);
 bool camera_stream_is_still_pending(const CameraStream *cam);
 bool camera_stream_poll_captured_still(CameraStream *cam, CameraCapturedStill *out_still);
+void camera_stream_set_burst_mode(CameraStream *cam, bool active);
+bool camera_stream_is_burst_mode(const CameraStream *cam);
+uint64_t camera_stream_get_frame_sequence(const CameraStream *cam);
 ```
 

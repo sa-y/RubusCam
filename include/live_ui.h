@@ -27,8 +27,21 @@ typedef enum LivePopupType {
   LIVE_POPUP_MET = 6,
   LIVE_POPUP_QUAL = 7,
   LIVE_POPUP_GRID = 8,
-  LIVE_POPUP_ASPECT = 9
+  LIVE_POPUP_ASPECT = 9,
+  LIVE_POPUP_DRIVE = 10
 } LivePopupType;
+
+/*
+ * Drive & special shooting modes (Phase 4).
+ */
+typedef enum LiveDriveMode {
+  LIVE_DRIVE_SINGLE = 0,    /* Single shot (default) */
+  LIVE_DRIVE_TIMER_2S = 1,  /* 2-second self-timer */
+  LIVE_DRIVE_TIMER_10S = 2, /* 10-second self-timer */
+  LIVE_DRIVE_BURST = 3,     /* Continuous burst shooting while held */
+  LIVE_DRIVE_INTERVAL = 4,  /* Intervalometer (auto time-lapse stills) */
+  LIVE_DRIVE_AEB = 5        /* Auto Exposure Bracketing (3 shots: 0, -, +) */
+} LiveDriveMode;
 
 /*
  * Composition guide grid modes for the Live View viewfinder.
@@ -67,6 +80,43 @@ typedef struct LiveUiController {
   int quality_preset_index;
   int grid_mode_index;
   int aspect_mask_index;
+  int drive_mode_index;
+  int interval_sec_index;
+  int interval_shots_index;
+  int aeb_step_index;
+
+  /* Self-timer runtime state */
+  bool timer_active;
+  uint32_t timer_start_ms;
+  uint32_t timer_duration_ms;
+  uint32_t timer_last_beep_ms;
+
+  /* Burst shooting runtime state */
+  bool burst_active;
+  bool burst_held_by_key;
+  bool burst_held_by_pointer;
+  int burst_shot_count;
+
+  /* Interval shooting runtime state */
+  bool interval_active;
+  int interval_shots_taken;
+  int interval_target_shots;
+  uint32_t interval_step_ms;
+  uint32_t interval_next_shot_ms;
+  bool interval_waiting_capture;
+
+  /* Auto Exposure Bracketing (AEB) runtime state */
+  bool aeb_active;
+  int aeb_shot_index;
+  int aeb_base_ev_step;
+  int aeb_target_ev_steps[3];
+  bool aeb_waiting_settle;
+  bool aeb_waiting_capture;
+  uint64_t aeb_settle_start_seq;
+  uint32_t aeb_settle_start_ms;
+
+  /* SDL2 Audio device ID for synthesized self-timer & shutter beep tones */
+  uint32_t audio_dev;
 
   /* Application quit requested via UI Quit button */
   bool quit_requested;
@@ -94,11 +144,17 @@ typedef struct LiveUiController {
   SDL_Rect popup_btn_minus;
   SDL_Rect popup_btn_plus;
   SDL_Rect popup_btn_reset;
+  SDL_Rect popup_sub_minus;
+  SDL_Rect popup_sub_plus;
+  SDL_Rect popup_sub_reset;
+  SDL_Rect popup_sub_rects[8];
+  int popup_sub_count;
   SDL_Rect popup_opt_rects[16];
   int popup_opt_count;
 
   /* Live View interactive button hitboxes */
   SDL_Rect top_btn_settings;
+  SDL_Rect top_btn_drive;
   SDL_Rect top_btn_play;
   SDL_Rect top_btn_af;
   SDL_Rect top_btn_reset;
@@ -115,6 +171,7 @@ typedef struct LiveUiController {
   SDL_Rect hud_btn_qual;
   SDL_Rect hud_btn_grid;
   SDL_Rect hud_btn_aspect;
+  SDL_Rect hud_btn_drive;
 
   SDL_Rect viewport_rect;
   SDL_Rect active_frame_rect;
@@ -124,6 +181,27 @@ typedef struct LiveUiController {
  * Initialize LiveUiController with default shooting parameters and UI state.
  */
 void live_ui_init(LiveUiController *ui);
+
+/*
+ * Release resources (such as SDL audio device) owned by LiveUiController.
+ */
+void live_ui_destroy(LiveUiController *ui);
+
+/*
+ * Per-frame update for drive modes (self-timer countdown & beep, continuous
+ * burst management, intervalometer scheduling, and AEB exposure sequencing).
+ */
+void live_ui_update(LiveUiController *ui, CameraStream *camera,
+                    AsyncSaveQueue *save_queue);
+
+/*
+ * Notify LiveUiController that a still capture has completed.
+ * Updates AEB / Interval / Burst state and returns true if Quick Review should
+ * be displayed for this captured frame, or false if Quick Review should be
+ * suppressed so continuous shooting can proceed.
+ */
+bool live_ui_on_still_captured(LiveUiController *ui, CameraStream *camera,
+                               CameraCapturedStill *still);
 
 /*
  * Print keyboard shortcut help banner to stdout.
@@ -163,13 +241,16 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
                         PlaybackManager *playback_mgr,
                         AsyncSaveQueue *save_queue, SDL_Renderer *renderer,
                         const SDL_KeyboardEvent *key_event);
+bool live_ui_handle_key_up(LiveUiController *ui, CameraStream *camera,
+                           const SDL_KeyboardEvent *key_event);
 
 /*
  * Handle mouse/touch pointer press, move, release, and mouse wheel events
  * when in APP_MODE_LIVE.
  */
 void live_ui_handle_pointer_down(LiveUiController *ui, CameraStream *camera,
-                                 int x, int y, uint8_t button);
+                                 AsyncSaveQueue *save_queue, int x, int y,
+                                 uint8_t button);
 void live_ui_handle_pointer_move(LiveUiController *ui, int x, int y);
 void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
                                PlaybackManager *playback_mgr,

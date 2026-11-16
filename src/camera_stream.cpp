@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -128,6 +129,7 @@ struct CameraStream {
   std::vector<std::unique_ptr<libcamera::Request>> m_requests;
   std::map<libcamera::Request *, libcamera::FrameBuffer *> m_requestVfBuffers;
   std::vector<libcamera::FrameBuffer *> m_stillBuffers;
+  std::vector<bool> m_stillBufferInUse;
   std::map<int, MappedPlane> m_mappedBuffers;
 
   // Mutex & double-buffering for thread-safe preview access from C main loop
@@ -136,19 +138,14 @@ struct CameraStream {
   uint64_t m_frameSequence = 0;
   bool m_hasNewFrame = false;
 
-  // Synchronization & buffer for high-resolution still capture
+  // Synchronization & ring buffer for high-resolution still / burst capture
+  static constexpr size_t kMaxCompletedStills = 8;
   std::mutex m_stillMutex;
   std::atomic<bool> m_stillCapturePending{false};
   std::atomic<bool> m_asyncStillInFlight{false};
+  std::atomic<bool> m_burstModeActive{false};
   std::chrono::steady_clock::time_point m_asyncStillStartTime{};
-  bool m_stillFrameReady = false;
-  uint8_t *m_stillData = nullptr;
-  size_t m_stillSize = 0;
-  int m_capturedStillWidth = 0;
-  int m_capturedStillHeight = 0;
-  int m_capturedStillStride = 0;
-  bool m_capturedStillMemoryOrderIsBGR = false;
-  CameraExposureStatus m_capturedStillExpStatus{};
+  std::deque<CameraCapturedStill> m_completedStills;
 
   std::string m_cameraModel = "RubusCam (libcamera)";
 
@@ -188,12 +185,13 @@ struct CameraStream {
   ~CameraStream() { clearStillBufferLocked(); }
 
   void clearStillBufferLocked() {
-    if (m_stillData) {
-      std::free(m_stillData);
-      m_stillData = nullptr;
+    for (auto &still : m_completedStills) {
+      if (still.data) {
+        std::free(still.data);
+        still.data = nullptr;
+      }
     }
-    m_stillSize = 0;
-    m_stillFrameReady = false;
+    m_completedStills.clear();
   }
 
   void updateExposureMetadata(const libcamera::ControlList &metadata);
@@ -521,6 +519,7 @@ void CameraStream::teardownStreams() {
   m_requests.clear();
   m_requestVfBuffers.clear();
   m_stillBuffers.clear();
+  m_stillBufferInUse.clear();
   unmapBuffers();
   m_allocator.reset();
   m_stream = nullptr;
@@ -565,6 +564,7 @@ bool CameraStream::allocateAndMapStreams() {
       m_mappedBuffers[plane.fd.get()] = {address, plane.length};
       m_stillBuffers.push_back(buffer.get());
     }
+    m_stillBufferInUse.assign(m_stillBuffers.size(), false);
   }
 
   // 3. Memory-map Viewfinder buffers & create preview requests
@@ -657,65 +657,71 @@ bool CameraStream::configureDualOrSingleStream() {
                     (targetStillW > targetVfW || targetStillH > targetVfH);
 
   if (canTryDual) {
-    auto dualConfig =
-        m_camera->generateConfiguration({libcamera::StreamRole::StillCapture,
-                                         libcamera::StreamRole::Viewfinder});
+    // Try multi-buffer StillCapture (2 buffers for high-speed burst overlap)
+    // first, falling back to 1 buffer if CMA memory is constrained.
+    static constexpr unsigned int kStillBufCounts[] = {2, 1};
+    for (unsigned int reqStillBufs : kStillBufCounts) {
+      auto dualConfig =
+          m_camera->generateConfiguration({libcamera::StreamRole::StillCapture,
+                                           libcamera::StreamRole::Viewfinder});
 
-    if (dualConfig && dualConfig->size() >= 2) {
-      libcamera::StreamConfiguration &stillCfg = dualConfig->at(0);
-      stillCfg.size.width = targetStillW;
-      stillCfg.size.height = targetStillH;
-      stillCfg.pixelFormat = libcamera::formats::BGR888;
-      stillCfg.bufferCount =
-          1; // Minimize CMA footprint for on-demand still capture
+      if (dualConfig && dualConfig->size() >= 2) {
+        libcamera::StreamConfiguration &stillCfg = dualConfig->at(0);
+        stillCfg.size.width = targetStillW;
+        stillCfg.size.height = targetStillH;
+        stillCfg.pixelFormat = libcamera::formats::BGR888;
+        stillCfg.bufferCount = reqStillBufs;
 
-      libcamera::StreamConfiguration &vfCfg = dualConfig->at(1);
-      vfCfg.size.width = targetVfW;
-      vfCfg.size.height = targetVfH;
-      vfCfg.pixelFormat = libcamera::formats::BGR888;
-      vfCfg.bufferCount = 4;
+        libcamera::StreamConfiguration &vfCfg = dualConfig->at(1);
+        vfCfg.size.width = targetVfW;
+        vfCfg.size.height = targetVfH;
+        vfCfg.pixelFormat = libcamera::formats::BGR888;
+        vfCfg.bufferCount = 4;
 
-      if (validateRgbCameraConfiguration(*dualConfig)) {
-        if (m_camera->configure(dualConfig.get()) == 0) {
-          m_config = std::move(dualConfig);
-          libcamera::StreamConfiguration &activeStillCfg = m_config->at(0);
-          libcamera::StreamConfiguration &activeVfCfg = m_config->at(1);
+        if (validateRgbCameraConfiguration(*dualConfig)) {
+          if (m_camera->configure(dualConfig.get()) == 0) {
+            m_config = std::move(dualConfig);
+            libcamera::StreamConfiguration &activeStillCfg = m_config->at(0);
+            libcamera::StreamConfiguration &activeVfCfg = m_config->at(1);
 
-          m_stillStream = activeStillCfg.stream();
-          m_stillWidth = activeStillCfg.size.width;
-          m_stillHeight = activeStillCfg.size.height;
-          m_stillStride = activeStillCfg.stride;
-          // In DRM/libcamera conventions, formats::RGB888 lays out bytes in
-          // memory as [B, G, R] (which corresponds to SDL_PIXELFORMAT_BGR24),
-          // whereas formats::BGR888 lays out bytes as [R, G, B]
-          // (SDL_PIXELFORMAT_RGB24).
-          m_stillMemoryOrderIsBGR =
-              (activeStillCfg.pixelFormat == libcamera::formats::RGB888);
+            m_stillStream = activeStillCfg.stream();
+            m_stillWidth = activeStillCfg.size.width;
+            m_stillHeight = activeStillCfg.size.height;
+            m_stillStride = activeStillCfg.stride;
+            // In DRM/libcamera conventions, formats::RGB888 lays out bytes in
+            // memory as [B, G, R] (which corresponds to SDL_PIXELFORMAT_BGR24),
+            // whereas formats::BGR888 lays out bytes as [R, G, B]
+            // (SDL_PIXELFORMAT_RGB24).
+            m_stillMemoryOrderIsBGR =
+                (activeStillCfg.pixelFormat == libcamera::formats::RGB888);
 
-          m_stream = activeVfCfg.stream();
-          m_width = activeVfCfg.size.width;
-          m_height = activeVfCfg.size.height;
-          m_stride = activeVfCfg.stride;
-          m_memoryOrderIsBGR =
-              (activeVfCfg.pixelFormat == libcamera::formats::RGB888);
-          m_dualStreamActive = true;
+            m_stream = activeVfCfg.stream();
+            m_width = activeVfCfg.size.width;
+            m_height = activeVfCfg.size.height;
+            m_stride = activeVfCfg.stride;
+            m_memoryOrderIsBGR =
+                (activeVfCfg.pixelFormat == libcamera::formats::RGB888);
+            m_dualStreamActive = true;
 
-          if (allocateAndMapStreams()) {
-            std::cout
-                << "[-] マルチストリーム構成 (2系統同時) を有効化しました:"
-                << std::endl;
-            std::cout << "    * Viewfinder : " << m_width << "x" << m_height
-                      << " (" << activeVfCfg.pixelFormat.toString()
-                      << ", Stride: " << m_stride << ")" << std::endl;
-            std::cout << "    * Still      : " << m_stillWidth << "x"
-                      << m_stillHeight << " ("
-                      << activeStillCfg.pixelFormat.toString()
-                      << ", Stride: " << m_stillStride << ")" << std::endl;
-            return true;
+            if (allocateAndMapStreams()) {
+              std::cout
+                  << "[-] マルチストリーム構成 (2系統同時) を有効化しました:"
+                  << std::endl;
+              std::cout << "    * Viewfinder : " << m_width << "x" << m_height
+                        << " (" << activeVfCfg.pixelFormat.toString()
+                        << ", Stride: " << m_stride << ")" << std::endl;
+              std::cout << "    * Still      : " << m_stillWidth << "x"
+                        << m_stillHeight << " ("
+                        << activeStillCfg.pixelFormat.toString()
+                        << ", Stride: " << m_stillStride
+                        << ", Buffers: " << m_stillBuffers.size() << ")"
+                        << std::endl;
+              return true;
+            }
+            // If buffer allocation failed, reset and try fewer buffers or
+            // single stream
+            m_dualStreamActive = false;
           }
-          // If buffer allocation failed, reset and fall through to single
-          // stream
-          m_dualStreamActive = false;
         }
       }
     }
@@ -843,19 +849,36 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
           bytesUsed = mapIt->second.length;
         }
 
-        uint8_t *heapCopy = static_cast<uint8_t *>(std::malloc(bytesUsed));
-        if (heapCopy) {
-          std::memcpy(heapCopy, dataPtr, bytesUsed);
-          std::lock_guard<std::mutex> lock(m_stillMutex);
-          clearStillBufferLocked();
-          m_stillData = heapCopy;
-          m_stillSize = bytesUsed;
-          m_capturedStillWidth = m_stillWidth;
-          m_capturedStillHeight = m_stillHeight;
-          m_capturedStillStride = m_stillStride;
-          m_capturedStillMemoryOrderIsBGR = m_stillMemoryOrderIsBGR;
-          populateExposureStatus(&m_capturedStillExpStatus);
-          m_stillFrameReady = true;
+        std::lock_guard<std::mutex> lock(m_stillMutex);
+        for (size_t i = 0; i < m_stillBuffers.size(); ++i) {
+          if (m_stillBuffers[i] == stillBuf && i < m_stillBufferInUse.size()) {
+            m_stillBufferInUse[i] = false;
+            break;
+          }
+        }
+
+        if (m_completedStills.size() < kMaxCompletedStills) {
+          uint8_t *heapCopy = static_cast<uint8_t *>(std::malloc(bytesUsed));
+          if (heapCopy) {
+            std::memcpy(heapCopy, dataPtr, bytesUsed);
+            CameraCapturedStill item{};
+            item.data = heapCopy;
+            item.size = bytesUsed;
+            item.width = m_stillWidth;
+            item.height = m_stillHeight;
+            item.stride = m_stillStride;
+            item.is_bgr = m_stillMemoryOrderIsBGR;
+            populateExposureStatus(&item.exp_status);
+            m_completedStills.push_back(item);
+          }
+        }
+      } else {
+        std::lock_guard<std::mutex> lock(m_stillMutex);
+        for (size_t i = 0; i < m_stillBuffers.size(); ++i) {
+          if (m_stillBuffers[i] == stillBuf && i < m_stillBufferInUse.size()) {
+            m_stillBufferInUse[i] = false;
+            break;
+          }
         }
       }
     }
@@ -873,10 +896,35 @@ void CameraStream::requestCompleted(libcamera::Request *request) {
     request->reuse(libcamera::Request::ReuseBuffers);
   }
 
-  // Attach on-demand StillCapture buffer if a still capture was requested
+  // Attach on-demand StillCapture buffer if a single still or burst capture is
+  // active
   if (m_dualStreamActive && m_stillStream && !m_stillBuffers.empty()) {
-    if (m_stillCapturePending.exchange(false)) {
-      request->addBuffer(m_stillStream, m_stillBuffers[0]);
+    bool singleReq = m_stillCapturePending.exchange(false);
+    bool burstReq = m_burstModeActive.load();
+    if (singleReq || burstReq) {
+      std::lock_guard<std::mutex> lock(m_stillMutex);
+      if (m_completedStills.size() < kMaxCompletedStills - 1) {
+        int freeIdx = -1;
+        for (size_t i = 0;
+             i < m_stillBuffers.size() && i < m_stillBufferInUse.size(); ++i) {
+          if (!m_stillBufferInUse[i]) {
+            freeIdx = static_cast<int>(i);
+            break;
+          }
+        }
+        if (freeIdx >= 0) {
+          if (request->addBuffer(m_stillStream, m_stillBuffers[freeIdx]) == 0) {
+            m_stillBufferInUse[freeIdx] = true;
+            m_asyncStillInFlight = true;
+          } else if (singleReq) {
+            m_stillCapturePending = true;
+          }
+        } else if (singleReq) {
+          m_stillCapturePending = true;
+        }
+      } else if (singleReq) {
+        m_stillCapturePending = true;
+      }
     }
   }
 
@@ -1253,6 +1301,7 @@ void camera_stream_stop(CameraStream *cam) {
   cam->m_running = false;
   cam->m_stillCapturePending = false;
   cam->m_asyncStillInFlight = false;
+  cam->m_burstModeActive = false;
 
   if (cam->m_camera) {
     cam->m_camera->stop();
@@ -1503,10 +1552,6 @@ bool camera_stream_request_still(CameraStream *cam) {
   // Path A: Dual-stream non-blocking still buffer request
   if (cam->m_dualStreamActive && cam->m_stillStream &&
       !cam->m_stillBuffers.empty()) {
-    {
-      std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-      cam->clearStillBufferLocked();
-    }
     cam->m_asyncStillStartTime = std::chrono::steady_clock::now();
     cam->m_stillCapturePending = true;
     return true;
@@ -1528,28 +1573,76 @@ bool camera_stream_request_still(CameraStream *cam) {
 
   {
     std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-    cam->clearStillBufferLocked();
-    cam->m_stillData = stillData;
-    cam->m_stillSize = stillSize;
-    cam->m_capturedStillWidth = width;
-    cam->m_capturedStillHeight = height;
-    cam->m_capturedStillStride = stride;
-    cam->m_capturedStillMemoryOrderIsBGR = isBGR;
-    camera_stream_get_exposure_status(cam, &cam->m_capturedStillExpStatus);
-    cam->m_stillFrameReady = true;
+    CameraCapturedStill item{};
+    item.data = stillData;
+    item.size = stillSize;
+    item.width = width;
+    item.height = height;
+    item.stride = stride;
+    item.is_bgr = isBGR;
+    camera_stream_get_exposure_status(cam, &item.exp_status);
+    cam->m_completedStills.push_back(item);
   }
   return true;
 }
 
 bool camera_stream_is_still_pending(const CameraStream *cam) {
-  return cam ? cam->m_asyncStillInFlight.load() : false;
+  if (!cam) {
+    return false;
+  }
+  return cam->m_asyncStillInFlight.load() || cam->m_burstModeActive.load();
 }
 
 bool camera_stream_poll_captured_still(CameraStream *cam,
                                        CameraCapturedStill *out_still) {
-  if (!cam || !out_still || !cam->m_asyncStillInFlight.load()) {
+  if (!cam || !out_still) {
     return false;
   }
+
+  {
+    std::lock_guard<std::mutex> lock(cam->m_stillMutex);
+    if (!cam->m_completedStills.empty()) {
+      *out_still = cam->m_completedStills.front();
+      cam->m_completedStills.pop_front();
+      bool anyInUse = false;
+      for (bool u : cam->m_stillBufferInUse) {
+        if (u) {
+          anyInUse = true;
+          break;
+        }
+      }
+      if (cam->m_completedStills.empty() && !anyInUse &&
+          !cam->m_stillCapturePending.load() &&
+          !cam->m_burstModeActive.load()) {
+        cam->m_asyncStillInFlight = false;
+        if (cam->m_afSupported) {
+          cam->m_afContinuousPending = true;
+        }
+      }
+      return true;
+    }
+  }
+
+  if (!cam->m_asyncStillInFlight.load() || cam->m_burstModeActive.load()) {
+    return false;
+  }
+
+  // Check if single-shot dual-stream capture timed out; if so, fall back to
+  // mode-switch
+  int64_t timeoutMs =
+      std::max<int64_t>(2000, cam->m_shutterUsSetting.load() / 1000 + 2000);
+  auto elapsedMs =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - cam->m_asyncStillStartTime)
+          .count();
+  if (elapsedMs < timeoutMs) {
+    return false;
+  }
+
+  cam->m_stillCapturePending = false;
+  std::cerr << "[警告] 非同期マルチストリーム取得がタイムアウトしました。"
+               "モード切替キャプチャへフォールバックします。"
+            << std::endl;
 
   uint8_t *heapBuf = nullptr;
   size_t bufSize = 0;
@@ -1557,49 +1650,10 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
   int height = 0;
   int stride = 0;
   bool isBGR = false;
-  CameraExposureStatus expStatus{};
-  bool ready = false;
-
-  {
-    std::lock_guard<std::mutex> lock(cam->m_stillMutex);
-    if (cam->m_stillFrameReady && cam->m_stillData != nullptr &&
-        cam->m_stillSize > 0) {
-      heapBuf = cam->m_stillData;
-      bufSize = cam->m_stillSize;
-      cam->m_stillData = nullptr;
-      cam->m_stillSize = 0;
-      cam->m_stillFrameReady = false;
-      width = cam->m_capturedStillWidth;
-      height = cam->m_capturedStillHeight;
-      stride = cam->m_capturedStillStride;
-      isBGR = cam->m_capturedStillMemoryOrderIsBGR;
-      expStatus = cam->m_capturedStillExpStatus;
-      ready = true;
-    }
-  }
-
-  if (!ready) {
-    // Check if dual-stream capture timed out; if so, fall back to mode-switch
-    int64_t timeoutMs =
-        std::max<int64_t>(2000, cam->m_shutterUsSetting.load() / 1000 + 2000);
-    auto elapsedMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - cam->m_asyncStillStartTime)
-            .count();
-    if (elapsedMs < timeoutMs) {
-      return false;
-    }
-
-    cam->m_stillCapturePending = false;
-    std::cerr << "[警告] 非同期マルチストリーム取得がタイムアウトしました。"
-                 "モード切替キャプチャへフォールバックします。"
-              << std::endl;
-    if (!cam->captureStillWithFallback(heapBuf, bufSize, width, height, stride,
-                                       isBGR)) {
-      cam->m_asyncStillInFlight = false;
-      return false;
-    }
-    camera_stream_get_exposure_status(cam, &expStatus);
+  if (!cam->captureStillWithFallback(heapBuf, bufSize, width, height, stride,
+                                     isBGR)) {
+    cam->m_asyncStillInFlight = false;
+    return false;
   }
 
   out_still->data = heapBuf;
@@ -1608,13 +1662,56 @@ bool camera_stream_poll_captured_still(CameraStream *cam,
   out_still->height = height;
   out_still->stride = stride;
   out_still->is_bgr = isBGR;
-  out_still->exp_status = expStatus;
+  camera_stream_get_exposure_status(cam, &out_still->exp_status);
 
   cam->m_asyncStillInFlight = false;
   if (cam->m_afSupported) {
     cam->m_afContinuousPending = true;
   }
   return true;
+}
+
+void camera_stream_set_burst_mode(CameraStream *cam, bool active) {
+  if (!cam || !cam->m_running) {
+    if (cam) {
+      cam->m_burstModeActive = false;
+    }
+    return;
+  }
+  bool prev = cam->m_burstModeActive.exchange(active);
+  if (active && !prev) {
+    cam->m_asyncStillStartTime = std::chrono::steady_clock::now();
+    cam->m_asyncStillInFlight = true;
+  } else if (!active && prev) {
+    std::lock_guard<std::mutex> lock(cam->m_stillMutex);
+    bool anyInUse = false;
+    for (bool u : cam->m_stillBufferInUse) {
+      if (u) {
+        anyInUse = true;
+        break;
+      }
+    }
+    if (cam->m_completedStills.empty() && !anyInUse &&
+        !cam->m_stillCapturePending.load()) {
+      cam->m_asyncStillInFlight = false;
+      if (cam->m_afSupported) {
+        cam->m_afContinuousPending = true;
+      }
+    }
+  }
+}
+
+bool camera_stream_is_burst_mode(const CameraStream *cam) {
+  return cam ? cam->m_burstModeActive.load() : false;
+}
+
+uint64_t camera_stream_get_frame_sequence(const CameraStream *cam) {
+  if (!cam) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(
+      const_cast<CameraStream *>(cam)->m_frameMutex);
+  return cam->m_frameSequence;
 }
 
 } // extern "C"

@@ -16,7 +16,7 @@ extern "C" {
 /*
  * Maximum number of high-resolution still frames buffered in the save queue.
  */
-#define ASYNC_SAVE_QUEUE_CAPACITY 8
+#define ASYNC_SAVE_QUEUE_CAPACITY 16
 
 /*
  * Single background JPEG + Exif save task.

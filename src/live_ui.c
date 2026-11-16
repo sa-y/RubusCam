@@ -1,5 +1,6 @@
 #include "live_ui.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,6 +112,157 @@ static const AspectPreset ASPECT_PRESETS[] = {
 };
 static const int ASPECT_PRESET_COUNT =
     (int)(sizeof(ASPECT_PRESETS) / sizeof(ASPECT_PRESETS[0]));
+
+typedef struct DrivePreset {
+  LiveDriveMode mode;
+  const char *name;
+  const char *hud_label;
+  const char *popup_label;
+} DrivePreset;
+
+static const DrivePreset DRIVE_PRESETS[] = {
+    {LIVE_DRIVE_SINGLE, "Single (単写)", "Single", "Single"},
+    {LIVE_DRIVE_TIMER_2S, "Self-Timer 2s (2秒セルフタイマー)", "Timer 2s",
+     "Timer 2s"},
+    {LIVE_DRIVE_TIMER_10S, "Self-Timer 10s (10秒セルフタイマー)", "Timer 10s",
+     "Timer 10s"},
+    {LIVE_DRIVE_BURST, "Burst (連写モード)", "Burst", "Burst"},
+    {LIVE_DRIVE_INTERVAL, "Interval (インターバル撮影)", "Interval",
+     "Interval"},
+    {LIVE_DRIVE_AEB, "AEB (3枚オートブラケティング)", "AEB(3f)", "AEB (3f)"},
+};
+static const int DRIVE_PRESET_COUNT =
+    (int)(sizeof(DRIVE_PRESETS) / sizeof(DRIVE_PRESETS[0]));
+
+typedef struct IntervalSecPreset {
+  int seconds;
+  const char *label;
+} IntervalSecPreset;
+
+static const IntervalSecPreset INTERVAL_SEC_PRESETS[] = {
+    {1, "1s"},     {2, "2s"},     {3, "3s"},     {5, "5s"},
+    {10, "10s"},   {30, "30s"},   {60, "1m"},    {300, "5m"},
+    {600, "10m"},  {1800, "30m"}, {3600, "60m"},
+};
+static const int INTERVAL_SEC_PRESET_COUNT =
+    (int)(sizeof(INTERVAL_SEC_PRESETS) / sizeof(INTERVAL_SEC_PRESETS[0]));
+
+typedef struct IntervalShotPreset {
+  int count; /* 0 = Unlimited */
+  const char *label;
+} IntervalShotPreset;
+
+static const IntervalShotPreset INTERVAL_SHOT_PRESETS[] = {
+    {5, "5f"},     {10, "10f"},   {30, "30f"},     {60, "60f"},
+    {120, "120f"}, {300, "300f"}, {0, "Inf"},
+};
+static const int INTERVAL_SHOT_PRESET_COUNT =
+    (int)(sizeof(INTERVAL_SHOT_PRESETS) / sizeof(INTERVAL_SHOT_PRESETS[0]));
+
+typedef struct AebStepPreset {
+  int ev_steps; /* in 1/3 EV increments */
+  const char *label;
+  const char *desc;
+} AebStepPreset;
+
+static const AebStepPreset AEB_STEP_PRESETS[] = {
+    {1, "+/-0.3 EV", "±0.3 EV (1/3 EV)"},
+    {2, "+/-0.7 EV", "±0.7 EV (2/3 EV)"},
+    {3, "+/-1.0 EV", "±1.0 EV"},
+    {6, "+/-2.0 EV", "±2.0 EV"},
+};
+static const int AEB_STEP_PRESET_COUNT =
+    (int)(sizeof(AEB_STEP_PRESETS) / sizeof(AEB_STEP_PRESETS[0]));
+
+static void live_ui_play_beep(LiveUiController *ui, float freq_hz,
+                              int duration_ms, float volume) {
+  if (!ui || ui->audio_dev == 0 || duration_ms <= 0 || freq_hz <= 20.0f) {
+    return;
+  }
+  if (duration_ms > 500) {
+    duration_ms = 500;
+  }
+  const int sample_rate = 44100;
+  int total_samples = (sample_rate * duration_ms) / 1000;
+  if (total_samples <= 0) {
+    return;
+  }
+  int16_t *buf = (int16_t *)malloc((size_t)total_samples * sizeof(int16_t));
+  if (!buf) {
+    return;
+  }
+  int fade_samples = (sample_rate * 5) / 1000; /* 5ms fade in/out */
+  if (fade_samples * 2 > total_samples) {
+    fade_samples = total_samples / 2;
+  }
+  const float two_pi = 6.283185307f;
+  float amp = volume * 28000.0f;
+  for (int i = 0; i < total_samples; ++i) {
+    float env = 1.0f;
+    if (fade_samples > 0) {
+      if (i < fade_samples) {
+        env = (float)i / (float)fade_samples;
+      } else if (i >= total_samples - fade_samples) {
+        env = (float)(total_samples - 1 - i) / (float)fade_samples;
+      }
+    }
+    float s = sinf(two_pi * freq_hz * ((float)i / (float)sample_rate));
+    buf[i] = (int16_t)(s * amp * env);
+  }
+  SDL_QueueAudio((SDL_AudioDeviceID)ui->audio_dev, buf,
+                 (Uint32)((size_t)total_samples * sizeof(int16_t)));
+  free(buf);
+}
+
+static bool live_ui_cancel_active_drive(LiveUiController *ui,
+                                        CameraStream *camera) {
+  if (!ui) {
+    return false;
+  }
+  bool cancelled = false;
+  if (ui->timer_active) {
+    ui->timer_active = false;
+    if (ui->audio_dev != 0) {
+      SDL_ClearQueuedAudio((SDL_AudioDeviceID)ui->audio_dev);
+    }
+    live_ui_play_beep(ui, 440.0f, 80, 0.20f);
+    printf("[-] セルフタイマーをキャンセルしました。\n");
+    cancelled = true;
+  }
+  if (ui->burst_active || ui->burst_held_by_key || ui->burst_held_by_pointer) {
+    ui->burst_active = false;
+    ui->burst_held_by_key = false;
+    ui->burst_held_by_pointer = false;
+    if (camera) {
+      camera_stream_set_burst_mode(camera, false);
+    }
+    printf("[-] 連写終了 (計 %d 枚撮影)。\n", ui->burst_shot_count);
+    cancelled = true;
+  }
+  if (ui->interval_active) {
+    ui->interval_active = false;
+    ui->interval_waiting_capture = false;
+    live_ui_play_beep(ui, 440.0f, 80, 0.20f);
+    printf("[-] インターバル撮影を停止しました (計 %d 枚撮影)。\n",
+           ui->interval_shots_taken);
+    cancelled = true;
+  }
+  if (ui->aeb_active) {
+    ui->aeb_active = false;
+    ui->aeb_waiting_settle = false;
+    ui->aeb_waiting_capture = false;
+    ui->ev_step_index = ui->aeb_base_ev_step;
+    if (camera) {
+      camera_stream_set_ev(camera, (float)ui->ev_step_index / 3.0f);
+    }
+    live_ui_play_beep(ui, 440.0f, 80, 0.20f);
+    printf("[-] オートブラケティング (AEB) を中断し、基準EV (%+.1f) "
+           "を復元しました。\n",
+           (float)ui->ev_step_index / 3.0f);
+    cancelled = true;
+  }
+  return cancelled;
+}
 
 static bool live_btn_hovered(const LiveUiController *ui, const SDL_Rect *r) {
   return ui && ui_rect_contains(r, ui->pointer_x, ui->pointer_y);
@@ -232,7 +384,44 @@ static void live_ui_set_aspect_index(LiveUiController *ui, int idx) {
          ASPECT_PRESETS[ui->aspect_mask_index].name);
 }
 
+static void live_ui_set_drive_index(LiveUiController *ui, CameraStream *camera,
+                                    int idx) {
+  live_ui_cancel_active_drive(ui, camera);
+  ui->drive_mode_index =
+      (idx % DRIVE_PRESET_COUNT + DRIVE_PRESET_COUNT) % DRIVE_PRESET_COUNT;
+  printf("[-] ドライブモード: %s\n", DRIVE_PRESETS[ui->drive_mode_index].name);
+}
+
+static void live_ui_set_interval_sec_index(LiveUiController *ui, int idx) {
+  ui->interval_sec_index =
+      (idx % INTERVAL_SEC_PRESET_COUNT + INTERVAL_SEC_PRESET_COUNT) %
+      INTERVAL_SEC_PRESET_COUNT;
+  printf("[-] インターバル撮影間隔: %s (%d秒)\n",
+         INTERVAL_SEC_PRESETS[ui->interval_sec_index].label,
+         INTERVAL_SEC_PRESETS[ui->interval_sec_index].seconds);
+}
+
+static void live_ui_set_interval_shots_index(LiveUiController *ui, int idx) {
+  ui->interval_shots_index =
+      (idx % INTERVAL_SHOT_PRESET_COUNT + INTERVAL_SHOT_PRESET_COUNT) %
+      INTERVAL_SHOT_PRESET_COUNT;
+  int cnt = INTERVAL_SHOT_PRESETS[ui->interval_shots_index].count;
+  if (cnt == 0) {
+    printf("[-] インターバル総撮影枚数: 無制限 (Inf)\n");
+  } else {
+    printf("[-] インターバル総撮影枚数: %d枚\n", cnt);
+  }
+}
+
+static void live_ui_set_aeb_step_index(LiveUiController *ui, int idx) {
+  ui->aeb_step_index = (idx % AEB_STEP_PRESET_COUNT + AEB_STEP_PRESET_COUNT) %
+                       AEB_STEP_PRESET_COUNT;
+  printf("[-] オートブラケティング (AEB) ステップ幅: %s\n",
+         AEB_STEP_PRESETS[ui->aeb_step_index].desc);
+}
+
 static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
+  live_ui_cancel_active_drive(ui, camera);
   ui->ev_step_index = 0;
   ui->iso_preset_index = 0;
   ui->shutter_preset_index = 0;
@@ -243,6 +432,10 @@ static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
   ui->quality_preset_index = 1;
   ui->grid_mode_index = 0;
   ui->aspect_mask_index = 0;
+  ui->drive_mode_index = 0;
+  ui->interval_sec_index = 3;   /* 5s */
+  ui->interval_shots_index = 2; /* 30 shots */
+  ui->aeb_step_index = 2;       /* +/-1.0 EV */
   ui->active_popup = LIVE_POPUP_NONE;
   ui->af_box_visible = false;
   camera_stream_set_ev(camera, 0.0f);
@@ -254,9 +447,9 @@ static void live_ui_reset_all(LiveUiController *ui, CameraStream *camera) {
   if (camera_stream_is_af_supported(camera)) {
     camera_stream_trigger_af(camera);
   }
-  printf("[-] 露出・WB・測光・画質・構図設定をリセットしました (EV: 0.0, ISO: "
-         "Auto, SS: Auto, WB: Auto, Met: Matrix, JPG: %s, Grid: Off, Aspect: "
-         "Native)\n",
+  printf("[-] 露出・WB・測光・画質・構図・ドライブ設定をリセットしました "
+         "(EV: 0.0, ISO: Auto, SS: Auto, WB: Auto, Met: Matrix, JPG: %s, "
+         "Grid: Off, Aspect: Native, Drive: Single)\n",
          JPEG_QUALITY_PRESETS[ui->quality_preset_index].name);
 }
 
@@ -390,16 +583,158 @@ static void render_composition_grid(SDL_Renderer *renderer,
   }
 }
 
-static void live_ui_request_shutter(CameraStream *camera,
-                                    AsyncSaveQueue *save_queue) {
+static bool live_ui_trigger_single_capture(LiveUiController *ui,
+                                           CameraStream *camera,
+                                           AsyncSaveQueue *save_queue) {
   if (camera_stream_is_still_pending(camera)) {
     printf("[-] 撮影処理中です...\n");
-  } else if (async_save_queue_get_pending_count(save_queue) >=
-             ASYNC_SAVE_QUEUE_CAPACITY) {
+    return false;
+  }
+  if (async_save_queue_get_pending_count(save_queue) >=
+      ASYNC_SAVE_QUEUE_CAPACITY) {
     fprintf(stderr,
             "[警告] 保存キューが満杯です。書き込み完了をお待ちください。\n");
-  } else {
-    camera_stream_request_still(camera);
+    return false;
+  }
+  if (camera_stream_request_still(camera)) {
+    live_ui_play_beep(ui, 1320.0f, 55, 0.25f);
+    return true;
+  }
+  return false;
+}
+
+static void live_ui_start_burst(LiveUiController *ui, CameraStream *camera,
+                                AsyncSaveQueue *save_queue) {
+  if (!ui || !camera || ui->burst_active) {
+    return;
+  }
+  if (async_save_queue_get_pending_count(save_queue) >=
+      ASYNC_SAVE_QUEUE_CAPACITY) {
+    fprintf(stderr,
+            "[警告] 保存キューが満杯です。書き込み完了をお待ちください。\n");
+    return;
+  }
+  ui->active_popup = LIVE_POPUP_NONE;
+  ui->burst_active = true;
+  ui->burst_shot_count = 0;
+  camera_stream_set_burst_mode(camera, true);
+  printf("[-] 連写モード開始 (シャッター長押し中)...\n");
+}
+
+static void live_ui_stop_burst(LiveUiController *ui, CameraStream *camera) {
+  if (!ui || !ui->burst_active) {
+    return;
+  }
+  ui->burst_active = false;
+  if (camera) {
+    camera_stream_set_burst_mode(camera, false);
+  }
+  printf("[-] 連写モード終了 (計 %d 枚撮影)。\n", ui->burst_shot_count);
+}
+
+static void live_ui_request_shutter(LiveUiController *ui, CameraStream *camera,
+                                    AsyncSaveQueue *save_queue) {
+  if (!ui || !camera) {
+    return;
+  }
+
+  /* If a timer, interval, or AEB sequence is currently active, pressing
+   * shutter cancels/stops it. */
+  if (ui->timer_active || ui->interval_active || ui->aeb_active) {
+    live_ui_cancel_active_drive(ui, camera);
+    return;
+  }
+
+  LiveDriveMode dmode = DRIVE_PRESETS[ui->drive_mode_index].mode;
+  switch (dmode) {
+  case LIVE_DRIVE_TIMER_2S:
+  case LIVE_DRIVE_TIMER_10S: {
+    uint32_t dur_ms = (dmode == LIVE_DRIVE_TIMER_2S) ? 2000U : 10000U;
+    ui->timer_active = true;
+    ui->timer_duration_ms = dur_ms;
+    ui->timer_start_ms = SDL_GetTicks();
+    ui->timer_last_beep_ms = ui->timer_start_ms;
+    live_ui_play_beep(ui, 880.0f, 70, 0.25f);
+    printf("[-] セルフタイマー開始 (%u秒)... "
+           "[Space/Esc/CANCELで中断]\n",
+           dur_ms / 1000U);
+    break;
+  }
+
+  case LIVE_DRIVE_BURST:
+    /* If triggered as a single tap without hold state, take 1 shot */
+    if (!ui->burst_active) {
+      live_ui_trigger_single_capture(ui, camera, save_queue);
+    }
+    break;
+
+  case LIVE_DRIVE_INTERVAL: {
+    int sec = INTERVAL_SEC_PRESETS[ui->interval_sec_index].seconds;
+    int target = INTERVAL_SHOT_PRESETS[ui->interval_shots_index].count;
+    ui->interval_active = true;
+    ui->interval_shots_taken = 0;
+    ui->interval_target_shots = target;
+    ui->interval_step_ms = (uint32_t)sec * 1000U;
+    ui->interval_next_shot_ms = SDL_GetTicks();
+    ui->interval_waiting_capture = false;
+    live_ui_play_beep(ui, 987.77f, 65, 0.25f);
+    if (target > 0) {
+      printf("[-] インターバル撮影を開始しました (間隔: %d秒, 総枚数: %d枚)\n",
+             sec, target);
+    } else {
+      printf("[-] インターバル撮影を開始しました (間隔: %d秒, 枚数: 無制限)\n",
+             sec);
+    }
+    break;
+  }
+
+  case LIVE_DRIVE_AEB: {
+    if (camera_stream_is_still_pending(camera) ||
+        async_save_queue_get_pending_count(save_queue) >=
+            ASYNC_SAVE_QUEUE_CAPACITY - 2) {
+      fprintf(stderr,
+              "[警告] AEB撮影を開始できません (カメラまたは保存キューが処理中"
+              "です)。\n");
+      return;
+    }
+    int step = AEB_STEP_PRESETS[ui->aeb_step_index].ev_steps;
+    int base = ui->ev_step_index;
+    int under = base - step;
+    if (under < -9) {
+      under = -9;
+    }
+    int over = base + step;
+    if (over > 9) {
+      over = 9;
+    }
+    ui->aeb_base_ev_step = base;
+    ui->aeb_target_ev_steps[0] = base;
+    ui->aeb_target_ev_steps[1] = under;
+    ui->aeb_target_ev_steps[2] = over;
+    ui->aeb_shot_index = 0;
+    ui->aeb_active = true;
+
+    printf("[-] オートブラケティング (AEB) 3枚連続撮影を開始します "
+           "(1枚目: %+.1f EV, 2枚目: %+.1f EV, 3枚目: %+.1f EV)...\n",
+           (float)base / 3.0f, (float)under / 3.0f, (float)over / 3.0f);
+
+    if (camera_stream_request_still(camera)) {
+      ui->aeb_waiting_settle = false;
+      ui->aeb_waiting_capture = true;
+      live_ui_play_beep(ui, 1200.0f, 45, 0.24f);
+    } else {
+      ui->aeb_waiting_settle = true;
+      ui->aeb_waiting_capture = false;
+      ui->aeb_settle_start_seq = camera_stream_get_frame_sequence(camera);
+      ui->aeb_settle_start_ms = SDL_GetTicks();
+    }
+    break;
+  }
+
+  case LIVE_DRIVE_SINGLE:
+  default:
+    live_ui_trigger_single_capture(ui, camera, save_queue);
+    break;
   }
 }
 
@@ -462,6 +797,148 @@ static void render_af_reticle(SDL_Renderer *renderer, LiveUiController *ui,
   SDL_RenderDrawLine(renderer, cx, cy - 8, cx, cy + 8);
 }
 
+static void render_drive_status_overlay(SDL_Renderer *renderer,
+                                        const LiveUiController *ui) {
+  if (!renderer || !ui) {
+    return;
+  }
+
+  const SDL_Rect *frame = (ui->active_frame_rect.w > 0 &&
+                           ui->active_frame_rect.h > 0)
+                              ? &ui->active_frame_rect
+                              : &ui->viewport_rect;
+  if (frame->w <= 0 || frame->h <= 0) {
+    return;
+  }
+
+  uint32_t now = SDL_GetTicks();
+
+  /* 1. Self-Timer Countdown Center Overlay */
+  if (ui->timer_active) {
+    uint32_t elapsed = now - ui->timer_start_ms;
+    uint32_t rem_ms =
+        (elapsed < ui->timer_duration_ms) ? (ui->timer_duration_ms - elapsed) : 0;
+    uint32_t rem_sec = (rem_ms + 999U) / 1000U;
+    if (rem_sec < 1U) {
+      rem_sec = 1U;
+    }
+
+    int box_w = 240;
+    int box_h = 112;
+    int cx = frame->x + frame->w / 2;
+    int cy = frame->y + frame->h / 2;
+    SDL_Rect panel = {cx - box_w / 2, cy - box_h / 2, box_w, box_h};
+
+    bool fast_blink = (rem_ms <= 2000U) && (((now / 125U) & 1U) != 0U);
+    SDL_Color bg = {12, 16, 24, 225};
+    SDL_Color bd = fast_blink ? (SDL_Color){255, 75, 75, 255}
+                              : (SDL_Color){255, 210, 60, 240};
+    text_renderer_draw_panel(renderer, &panel, bg, bd);
+
+    /* Simulated tally LED indicator dot */
+    SDL_Rect led_rect = {panel.x + 16, panel.y + 14, 12, 12};
+    bool led_on = (rem_ms <= 2000U) ? (((now / 125U) & 1U) == 0U)
+                                    : (((now / 500U) & 1U) == 0U);
+    SDL_SetRenderDrawColor(renderer, led_on ? 255 : 90, led_on ? 50 : 30,
+                           led_on ? 50 : 30, 255);
+    SDL_RenderFillRect(renderer, &led_rect);
+
+    char hdr[48];
+    snprintf(hdr, sizeof(hdr), "SELF-TIMER (%us)", ui->timer_duration_ms / 1000U);
+    SDL_Color hdr_col = {255, 225, 120, 255};
+    text_renderer_draw_text(renderer, hdr, panel.x + 36, panel.y + 10, hdr_col,
+                            NULL, NULL);
+
+    char count_str[64];
+    snprintf(count_str, sizeof(count_str), ">>>  %u s  <<<", rem_sec);
+    int tw = 0;
+    int th = 0;
+    text_renderer_measure_text(count_str, &tw, &th);
+    SDL_Color num_col = fast_blink ? (SDL_Color){255, 110, 110, 255}
+                                   : (SDL_Color){255, 255, 255, 255};
+    text_renderer_draw_text(renderer, count_str, panel.x + (box_w - tw) / 2,
+                            panel.y + 42, num_col, NULL, NULL);
+
+    /* Progress bar inside countdown panel */
+    int bar_margin = 18;
+    int bar_w = box_w - bar_margin * 2;
+    int bar_h = 12;
+    SDL_Rect bar_bg = {panel.x + bar_margin, panel.y + box_h - 26, bar_w,
+                       bar_h};
+    SDL_SetRenderDrawColor(renderer, 40, 48, 62, 230);
+    SDL_RenderFillRect(renderer, &bar_bg);
+
+    float ratio = (ui->timer_duration_ms > 0)
+                      ? ((float)rem_ms / (float)ui->timer_duration_ms)
+                      : 0.0f;
+    if (ratio < 0.0f) {
+      ratio = 0.0f;
+    } else if (ratio > 1.0f) {
+      ratio = 1.0f;
+    }
+    int fill_w = (int)((float)bar_w * ratio + 0.5f);
+    if (fill_w > 0) {
+      SDL_Rect bar_fg = {bar_bg.x, bar_bg.y, fill_w, bar_h};
+      SDL_SetRenderDrawColor(renderer, bd.r, bd.g, bd.b, 240);
+      SDL_RenderFillRect(renderer, &bar_fg);
+    }
+    SDL_SetRenderDrawColor(renderer, 180, 195, 215, 180);
+    SDL_RenderDrawRect(renderer, &bar_bg);
+  }
+
+  /* 2. Active Burst / Interval / AEB Banner at Top-Center of Frame */
+  char status_msg[96];
+  status_msg[0] = '\0';
+  SDL_Color fg = {255, 255, 255, 255};
+  SDL_Color bg = {18, 24, 34, 230};
+  SDL_Color bd = {90, 220, 255, 245};
+
+  if (ui->burst_active) {
+    snprintf(status_msg, sizeof(status_msg), "BURST SHOOTING: %d shots",
+             ui->burst_shot_count);
+    fg = (SDL_Color){255, 240, 240, 255};
+    bg = (SDL_Color){150, 24, 32, 235};
+    bd = (SDL_Color){255, 120, 120, 255};
+  } else if (ui->interval_active) {
+    uint32_t next_s = 0;
+    if (!ui->interval_waiting_capture &&
+        !SDL_TICKS_PASSED(now, ui->interval_next_shot_ms)) {
+      next_s = (ui->interval_next_shot_ms - now + 999U) / 1000U;
+    }
+    if (ui->interval_target_shots > 0) {
+      snprintf(status_msg, sizeof(status_msg),
+               "INTERVAL: %d / %d shots (Next: %us)", ui->interval_shots_taken,
+               ui->interval_target_shots, next_s);
+    } else {
+      snprintf(status_msg, sizeof(status_msg),
+               "INTERVAL: %d / Inf shots (Next: %us)", ui->interval_shots_taken,
+               next_s);
+    }
+    fg = (SDL_Color){230, 255, 235, 255};
+    bg = (SDL_Color){18, 95, 48, 235};
+    bd = (SDL_Color){100, 245, 140, 250};
+  } else if (ui->aeb_active) {
+    float cur_ev = (float)ui->aeb_target_ev_steps[ui->aeb_shot_index] / 3.0f;
+    snprintf(status_msg, sizeof(status_msg), "AEB BRACKETING: %d / 3 (%+.1f EV)",
+             ui->aeb_shot_index + 1, cur_ev);
+    fg = (SDL_Color){255, 240, 130, 255};
+    bg = (SDL_Color){95, 65, 10, 235};
+    bd = (SDL_Color){255, 205, 55, 250};
+  }
+
+  if (status_msg[0] != '\0') {
+    int tw = 0;
+    int th = 0;
+    text_renderer_measure_text(status_msg, &tw, &th);
+    int bx = frame->x + (frame->w - (tw + 24)) / 2;
+    int by = frame->y + 52;
+    if (by < 54) {
+      by = 54;
+    }
+    text_renderer_draw_badge(renderer, status_msg, bx, by, fg, bg, bd, NULL);
+  }
+}
+
 typedef struct {
   char label[48];
   int min_w;
@@ -489,22 +966,26 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
   ui->popup_btn_minus = (SDL_Rect){0, 0, 0, 0};
   ui->popup_btn_plus = (SDL_Rect){0, 0, 0, 0};
   ui->popup_btn_reset = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_sub_minus = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_sub_plus = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_sub_reset = (SDL_Rect){0, 0, 0, 0};
+  ui->popup_sub_count = 0;
   ui->popup_opt_count = 0;
 
   if (ui->active_popup == LIVE_POPUP_NONE) {
     return;
   }
 
-  /* Determine right edge of the left vertical settings column across all 10
+  /* Determine right edge of the left vertical settings column across all 11
    * buttons */
-  const SDL_Rect *left_btns[10] = {
-      &ui->hud_btn_ss,   &ui->hud_btn_iso,  &ui->hud_btn_ev,
-      &ui->hud_btn_wb,   &ui->hud_btn_temp, &ui->hud_btn_lock,
-      &ui->hud_btn_met,  &ui->hud_btn_qual, &ui->hud_btn_grid,
-      &ui->hud_btn_aspect,
+  const SDL_Rect *left_btns[11] = {
+      &ui->hud_btn_ss,     &ui->hud_btn_iso,   &ui->hud_btn_ev,
+      &ui->hud_btn_wb,     &ui->hud_btn_temp,  &ui->hud_btn_lock,
+      &ui->hud_btn_met,    &ui->hud_btn_qual,  &ui->hud_btn_grid,
+      &ui->hud_btn_aspect, &ui->hud_btn_drive,
   };
   int left_col_right = 152;
-  for (int i = 0; i < 10; ++i) {
+  for (int i = 0; i < 11; ++i) {
     int r_edge = left_btns[i]->x + left_btns[i]->w;
     if (r_edge > left_col_right) {
       left_col_right = r_edge;
@@ -560,6 +1041,10 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
   case LIVE_POPUP_ASPECT:
     title = "Aspect Ratio (Mask & Crop) [A]";
     anchor_y = ui->hud_btn_aspect.y;
+    break;
+  case LIVE_POPUP_DRIVE:
+    title = "Drive Mode [D]";
+    anchor_y = ui->hud_btn_drive.y > 0 ? ui->hud_btn_drive.y : 56;
     break;
   default:
     break;
@@ -729,6 +1214,81 @@ static void render_live_popup(SDL_Renderer *renderer, LiveUiController *ui,
       it->target_rect = &ui->popup_opt_rects[i];
       it->force_new_row = false;
     }
+  } else if (ui->active_popup == LIVE_POPUP_DRIVE) {
+    ui->popup_opt_count = DRIVE_PRESET_COUNT;
+    for (int i = 0; i < DRIVE_PRESET_COUNT; ++i) {
+      PopupBtnItem *it = &items[item_count++];
+      snprintf(it->label, sizeof(it->label), "%s",
+               DRIVE_PRESETS[i].popup_label);
+      it->min_w = 92;
+      it->style = (ui->drive_mode_index == i) ? UI_BTN_STYLE_ACTIVE
+                                              : UI_BTN_STYLE_DEFAULT;
+      it->target_rect = &ui->popup_opt_rects[i];
+      it->force_new_row = false;
+    }
+
+    LiveDriveMode dmode = DRIVE_PRESETS[ui->drive_mode_index].mode;
+    if (dmode == LIVE_DRIVE_INTERVAL) {
+      PopupBtnItem *it_im = &items[item_count++];
+      snprintf(it_im->label, sizeof(it_im->label), "Intvl -");
+      it_im->min_w = 84;
+      it_im->style = UI_BTN_STYLE_DEFAULT;
+      it_im->target_rect = &ui->popup_btn_minus;
+      it_im->force_new_row = true;
+
+      PopupBtnItem *it_ir = &items[item_count++];
+      snprintf(it_ir->label, sizeof(it_ir->label), "Interval: %s",
+               INTERVAL_SEC_PRESETS[ui->interval_sec_index].label);
+      it_ir->min_w = 148;
+      it_ir->style = UI_BTN_STYLE_ACCENT;
+      it_ir->target_rect = &ui->popup_btn_reset;
+      it_ir->force_new_row = false;
+
+      PopupBtnItem *it_ip = &items[item_count++];
+      snprintf(it_ip->label, sizeof(it_ip->label), "Intvl +");
+      it_ip->min_w = 84;
+      it_ip->style = UI_BTN_STYLE_DEFAULT;
+      it_ip->target_rect = &ui->popup_btn_plus;
+      it_ip->force_new_row = false;
+
+      PopupBtnItem *it_sm = &items[item_count++];
+      snprintf(it_sm->label, sizeof(it_sm->label), "Shots -");
+      it_sm->min_w = 84;
+      it_sm->style = UI_BTN_STYLE_DEFAULT;
+      it_sm->target_rect = &ui->popup_sub_minus;
+      it_sm->force_new_row = true;
+
+      PopupBtnItem *it_sr = &items[item_count++];
+      int scnt = INTERVAL_SHOT_PRESETS[ui->interval_shots_index].count;
+      if (scnt == 0) {
+        snprintf(it_sr->label, sizeof(it_sr->label), "Shots: Inf (Unlimited)");
+      } else {
+        snprintf(it_sr->label, sizeof(it_sr->label), "Shots: %d frames", scnt);
+      }
+      it_sr->min_w = 148;
+      it_sr->style = UI_BTN_STYLE_ACCENT;
+      it_sr->target_rect = &ui->popup_sub_reset;
+      it_sr->force_new_row = false;
+
+      PopupBtnItem *it_sp = &items[item_count++];
+      snprintf(it_sp->label, sizeof(it_sp->label), "Shots +");
+      it_sp->min_w = 84;
+      it_sp->style = UI_BTN_STYLE_DEFAULT;
+      it_sp->target_rect = &ui->popup_sub_plus;
+      it_sp->force_new_row = false;
+    } else if (dmode == LIVE_DRIVE_AEB) {
+      ui->popup_sub_count = AEB_STEP_PRESET_COUNT;
+      for (int i = 0; i < AEB_STEP_PRESET_COUNT; ++i) {
+        PopupBtnItem *it = &items[item_count++];
+        snprintf(it->label, sizeof(it->label), "Step %s",
+                 AEB_STEP_PRESETS[i].label);
+        it->min_w = 112;
+        it->style = (ui->aeb_step_index == i) ? UI_BTN_STYLE_ACCENT
+                                              : UI_BTN_STYLE_DEFAULT;
+        it->target_rect = &ui->popup_sub_rects[i];
+        it->force_new_row = (i == 0);
+      }
+    }
   }
 
   /* Pass 1: Compute wrapped relative button positions within max_panel_w */
@@ -855,6 +1415,10 @@ static void handle_live_wheel_or_step(LiveUiController *ui,
   } else if (ui_rect_contains(&ui->hud_btn_aspect, px, py) ||
              ui->active_popup == LIVE_POPUP_ASPECT) {
     live_ui_set_aspect_index(ui, ui->aspect_mask_index + dir);
+  } else if (ui_rect_contains(&ui->hud_btn_drive, px, py) ||
+             ui_rect_contains(&ui->top_btn_drive, px, py) ||
+             ui->active_popup == LIVE_POPUP_DRIVE) {
+    live_ui_set_drive_index(ui, camera, ui->drive_mode_index + dir);
   } else {
     /* Default wheel action on live viewfinder: adjust EV compensation */
     live_ui_step_ev(ui, camera, dir);
@@ -867,15 +1431,210 @@ void live_ui_init(LiveUiController *ui) {
   }
   memset(ui, 0, sizeof(*ui));
   ui->wb_kelvin_value = 5500;
-  ui->quality_preset_index = 1; /* Default: Fine (90%) */
+  ui->quality_preset_index = 1;  /* Default: Fine (90%) */
+  ui->interval_sec_index = 3;    /* Default: 5s */
+  ui->interval_shots_index = 2;  /* Default: 30 shots */
+  ui->aeb_step_index = 2;        /* Default: +/-1.0 EV */
   ui->pointer_x = -1;
   ui->pointer_y = -1;
+
+  /* Initialize SDL2 Audio for synthesized self-timer & shutter beep tones
+   * (graceful silent fallback if no audio output device is available) */
+  if ((SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) == 0) {
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+      return;
+    }
+  }
+  SDL_AudioSpec want;
+  SDL_AudioSpec have;
+  SDL_zero(want);
+  SDL_zero(have);
+  want.freq = 44100;
+  want.format = AUDIO_S16SYS;
+  want.channels = 1;
+  want.samples = 1024;
+  want.callback = NULL;
+  SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+  if (dev > 0) {
+    SDL_PauseAudioDevice(dev, 0);
+    ui->audio_dev = (uint32_t)dev;
+  }
+}
+
+void live_ui_destroy(LiveUiController *ui) {
+  if (!ui) {
+    return;
+  }
+  if (ui->audio_dev != 0) {
+    SDL_CloseAudioDevice((SDL_AudioDeviceID)ui->audio_dev);
+    ui->audio_dev = 0;
+  }
+}
+
+void live_ui_update(LiveUiController *ui, CameraStream *camera,
+                    AsyncSaveQueue *save_queue) {
+  if (!ui || !camera) {
+    return;
+  }
+
+  uint32_t now = SDL_GetTicks();
+
+  /* 1. Self-timer countdown & synthesized sine-wave beep */
+  if (ui->timer_active) {
+    uint32_t elapsed = now - ui->timer_start_ms;
+    if (elapsed >= ui->timer_duration_ms) {
+      ui->timer_active = false;
+      live_ui_trigger_single_capture(ui, camera, save_queue);
+    } else {
+      uint32_t rem_ms = ui->timer_duration_ms - elapsed;
+      uint32_t beep_interval = (rem_ms <= 2000U) ? 250U : 1000U;
+      if (SDL_TICKS_PASSED(now, ui->timer_last_beep_ms + beep_interval)) {
+        ui->timer_last_beep_ms = now;
+        if (rem_ms <= 2000U) {
+          live_ui_play_beep(ui, 1046.5f, 45, 0.25f);
+        } else {
+          live_ui_play_beep(ui, 880.0f, 65, 0.22f);
+        }
+      }
+    }
+  }
+
+  /* 2. Continuous Burst Mode management */
+  if (ui->burst_active) {
+    if (!ui->burst_held_by_key && !ui->burst_held_by_pointer) {
+      live_ui_stop_burst(ui, camera);
+    } else {
+      int pending = async_save_queue_get_pending_count(save_queue);
+      if (pending >= ASYNC_SAVE_QUEUE_CAPACITY - 1) {
+        /* Temporarily throttle burst stream when save queue is full */
+        if (camera_stream_is_burst_mode(camera)) {
+          camera_stream_set_burst_mode(camera, false);
+        }
+      } else {
+        if (!camera_stream_is_burst_mode(camera)) {
+          camera_stream_set_burst_mode(camera, true);
+        }
+      }
+    }
+  }
+
+  /* 3. Interval shooting scheduler */
+  if (ui->interval_active && !ui->interval_waiting_capture) {
+    if (SDL_TICKS_PASSED(now, ui->interval_next_shot_ms)) {
+      if (!camera_stream_is_still_pending(camera) &&
+          async_save_queue_get_pending_count(save_queue) <
+              ASYNC_SAVE_QUEUE_CAPACITY) {
+        if (camera_stream_request_still(camera)) {
+          ui->interval_waiting_capture = true;
+          ui->interval_next_shot_ms = now + ui->interval_step_ms;
+          live_ui_play_beep(ui, 1320.0f, 45, 0.22f);
+        }
+      }
+    }
+  }
+
+  /* 4. Auto Exposure Bracketing (AEB) exposure settle & trigger */
+  if (ui->aeb_active && ui->aeb_waiting_settle && !ui->aeb_waiting_capture) {
+    uint64_t cur_seq = camera_stream_get_frame_sequence(camera);
+    bool frames_settled = (cur_seq >= ui->aeb_settle_start_seq + 4ULL);
+    bool time_settled = SDL_TICKS_PASSED(now, ui->aeb_settle_start_ms + 150U);
+    if ((frames_settled || time_settled) &&
+        !camera_stream_is_still_pending(camera) &&
+        async_save_queue_get_pending_count(save_queue) <
+            ASYNC_SAVE_QUEUE_CAPACITY) {
+      if (camera_stream_request_still(camera)) {
+        ui->aeb_waiting_settle = false;
+        ui->aeb_waiting_capture = true;
+        live_ui_play_beep(ui, 1200.0f, 45, 0.24f);
+      }
+    }
+  }
+}
+
+bool live_ui_on_still_captured(LiveUiController *ui, CameraStream *camera,
+                               CameraCapturedStill *still) {
+  if (!ui) {
+    return true;
+  }
+
+  /* 1. Burst Mode: count shot, click sound, suppress Quick Review while held */
+  if (ui->burst_active ||
+      DRIVE_PRESETS[ui->drive_mode_index].mode == LIVE_DRIVE_BURST) {
+    if (ui->burst_active) {
+      ui->burst_shot_count++;
+      live_ui_play_beep(ui, 1480.0f, 22, 0.16f);
+      printf("[-] 連写キャプチャ: %d 枚目\n", ui->burst_shot_count);
+      return false;
+    }
+  }
+
+  /* 2. Interval Shooting: advance counter, suppress Quick Review until final
+   * shot */
+  if (ui->interval_active) {
+    ui->interval_waiting_capture = false;
+    ui->interval_shots_taken++;
+    if (ui->interval_target_shots > 0) {
+      printf("[-] インターバル撮影: %d / %d 枚目完了\n",
+             ui->interval_shots_taken, ui->interval_target_shots);
+      if (ui->interval_shots_taken >= ui->interval_target_shots) {
+        ui->interval_active = false;
+        live_ui_play_beep(ui, 1567.98f, 110, 0.28f);
+        printf("[-] インターバル撮影が完了しました (計 %d 枚)。\n",
+               ui->interval_shots_taken);
+        return true;
+      }
+    } else {
+      printf("[-] インターバル撮影: %d 枚目完了 (無制限モード)\n",
+             ui->interval_shots_taken);
+    }
+    return false;
+  }
+
+  /* 3. Auto Exposure Bracketing (AEB): advance across 3 bracketed shots */
+  if (ui->aeb_active) {
+    ui->aeb_waiting_capture = false;
+    int idx = ui->aeb_shot_index;
+    if (idx < 0 || idx > 2) {
+      idx = 0;
+    }
+    float shot_ev = (float)ui->aeb_target_ev_steps[idx] / 3.0f;
+    if (still) {
+      still->exp_status.ev_compensation = shot_ev;
+    }
+    printf("[-] AEB撮影: %d / 3 枚目完了 (%+.1f EV)\n", idx + 1, shot_ev);
+
+    if (idx < 2) {
+      ui->aeb_shot_index = idx + 1;
+      float next_ev = (float)ui->aeb_target_ev_steps[ui->aeb_shot_index] / 3.0f;
+      if (camera) {
+        camera_stream_set_ev(camera, next_ev);
+        ui->aeb_settle_start_seq = camera_stream_get_frame_sequence(camera);
+      }
+      ui->aeb_settle_start_ms = SDL_GetTicks();
+      ui->aeb_waiting_settle = true;
+      return false;
+    } else {
+      /* 3rd shot complete: restore base EV */
+      ui->aeb_active = false;
+      ui->aeb_waiting_settle = false;
+      ui->ev_step_index = ui->aeb_base_ev_step;
+      if (camera) {
+        camera_stream_set_ev(camera, (float)ui->ev_step_index / 3.0f);
+      }
+      live_ui_play_beep(ui, 1567.98f, 100, 0.26f);
+      printf("[-] AEB 3枚連続撮影が完了しました (基準EV %+.1f に復帰)。\n",
+             (float)ui->ev_step_index / 3.0f);
+      return true;
+    }
+  }
+
+  return true;
 }
 
 void live_ui_print_help(const CameraStream *camera) {
   printf("=========================================\n");
-  printf(" [Space]        : 写真を撮影して非同期保存 "
-         "(直後にクイックレビュー表示)\n");
+  printf(" [Space]        : 写真を撮影 (連写時は長押し / タイマー・インターバル時は開始/停止)\n");
+  printf(" [D / Shift+D]  : ドライブモード切替 (単写 / 2秒・10秒タイマー / 連写 / インターバル / AEB)\n");
   printf(" [P]            : 再生・ギャラリーモード切替 "
          "(ズーム/グリッド/削除/保護)\n");
   if (camera && camera_stream_is_af_supported(camera)) {
@@ -898,7 +1657,7 @@ void live_ui_print_help(const CameraStream *camera) {
          "十字 / 三分割+十字)\n");
   printf(" [A / Shift+A]  : アスペクト比マスク&クロップ切替 (Native / 16:9 / "
          "4:3 / 3:2 / 1:1)\n");
-  printf(" [R]            : 露出・WB・測光・画質・構図設定をデフォルトにリセット\n");
+  printf(" [R]            : 露出・WB・測光・画質・構図・ドライブ設定をリセット\n");
   printf(" [Q]            : アプリを終了\n");
   printf("=========================================\n");
 }
@@ -983,12 +1742,14 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
 
   bool af_supported = camera_stream_is_af_supported(camera);
 
-  /* 1. Aspect ratio mask, composition guide grid, and Touch AF reticle */
+  /* 1. Aspect ratio mask, composition guide grid, Touch AF reticle, and Drive
+   * status overlays */
   render_aspect_mask(renderer, ui);
   render_composition_grid(renderer, ui);
   render_af_reticle(renderer, ui, camera);
+  render_drive_status_overlay(renderer, ui);
 
-  /* 2. Top action bar (Top-left: Settings [+ Reset], Top-right: Quit) */
+  /* 2. Top action bar (Top-left: Settings + Drive [+ Reset], Top-right: Quit) */
   int tx = 12;
   int ty = 10;
   int tgap = 8;
@@ -1001,6 +1762,20 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
                             live_btn_hovered(ui, &ui->top_btn_settings),
                             live_btn_pressed(ui, &ui->top_btn_settings), &r);
   ui->top_btn_settings = r;
+  tx += r.w + tgap;
+
+  char top_drv_str[40];
+  snprintf(top_drv_str, sizeof(top_drv_str), "Drive:%s [D]",
+           DRIVE_PRESETS[ui->drive_mode_index].hud_label);
+  text_renderer_draw_button(
+      renderer, top_drv_str, tx, ty, 128, th,
+      ui->active_popup == LIVE_POPUP_DRIVE
+          ? UI_BTN_STYLE_ACTIVE
+          : (ui->drive_mode_index != 0 ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+      live_btn_hovered(ui, &ui->top_btn_drive),
+      live_btn_pressed(ui, &ui->top_btn_drive), &r);
+  ui->top_btn_drive = r;
   tx += r.w + tgap;
 
   if (ui->settings_visible) {
@@ -1043,11 +1818,26 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
   int sh_x = right_col_x;
   int sh_y = (win_h - right_group_h) / 2;
 
-  text_renderer_draw_button(
-      renderer, still_busy ? "WAIT..." : "SHOT", sh_x, sh_y, sh_w, sh_h,
-      still_busy ? UI_BTN_STYLE_ACCENT : UI_BTN_STYLE_DANGER,
-      live_btn_hovered(ui, &ui->btn_shutter),
-      live_btn_pressed(ui, &ui->btn_shutter), &ui->btn_shutter);
+  const char *sh_label = "SHOT";
+  UiButtonStyle sh_style = UI_BTN_STYLE_DANGER;
+  if (ui->timer_active) {
+    sh_label = "CANCEL";
+    sh_style = UI_BTN_STYLE_ACCENT;
+  } else if (ui->interval_active || ui->aeb_active) {
+    sh_label = "STOP";
+    sh_style = UI_BTN_STYLE_ACCENT;
+  } else if (ui->burst_active) {
+    sh_label = "BURST";
+    sh_style = UI_BTN_STYLE_ACTIVE;
+  } else if (still_busy) {
+    sh_label = "WAIT...";
+    sh_style = UI_BTN_STYLE_ACCENT;
+  }
+
+  text_renderer_draw_button(renderer, sh_label, sh_x, sh_y, sh_w, sh_h,
+                            sh_style, live_btn_hovered(ui, &ui->btn_shutter),
+                            live_btn_pressed(ui, &ui->btn_shutter),
+                            &ui->btn_shutter);
 
   if (af_supported) {
     CameraAfStatus af_st = camera_stream_get_af_status(camera);
@@ -1087,7 +1877,10 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
     ui->hud_btn_qual = (SDL_Rect){0, 0, 0, 0};
     ui->hud_btn_grid = (SDL_Rect){0, 0, 0, 0};
     ui->hud_btn_aspect = (SDL_Rect){0, 0, 0, 0};
-    ui->active_popup = LIVE_POPUP_NONE;
+    ui->hud_btn_drive = (SDL_Rect){0, 0, 0, 0};
+    if (ui->active_popup != LIVE_POPUP_DRIVE) {
+      ui->active_popup = LIVE_POPUP_NONE;
+    }
     render_live_popup(renderer, ui, win_w, win_h);
     return;
   }
@@ -1095,13 +1888,13 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
   int bx = 12;
   int by = 56;
   int avail_h = win_h - by - 10;
-  int bgap = avail_h >= 440 ? 6 : 4;
-  int bh = (avail_h - 9 * bgap) / 10;
-  if (bh > 40) {
-    bh = 40;
+  int bgap = avail_h >= 460 ? 5 : 3;
+  int bh = (avail_h - 10 * bgap) / 11;
+  if (bh > 38) {
+    bh = 38;
   }
-  if (bh < 28) {
-    bh = 28;
+  if (bh < 26) {
+    bh = 26;
   }
   int bw = 156;
 
@@ -1258,6 +2051,20 @@ void live_ui_render(LiveUiController *ui, SDL_Renderer *renderer,
                             live_btn_hovered(ui, &ui->hud_btn_aspect),
                             live_btn_pressed(ui, &ui->hud_btn_aspect), &r);
   ui->hud_btn_aspect = r;
+  by += r.h + bgap;
+
+  char drv_str[32];
+  snprintf(drv_str, sizeof(drv_str), "Drive:%s",
+           DRIVE_PRESETS[ui->drive_mode_index].hud_label);
+  text_renderer_draw_button(renderer, drv_str, bx, by, bw, bh,
+                            ui->active_popup == LIVE_POPUP_DRIVE
+                                ? UI_BTN_STYLE_ACTIVE
+                                : (ui->drive_mode_index != 0
+                                       ? UI_BTN_STYLE_ACCENT
+                                       : UI_BTN_STYLE_DEFAULT),
+                            live_btn_hovered(ui, &ui->hud_btn_drive),
+                            live_btn_pressed(ui, &ui->hud_btn_drive), &r);
+  ui->hud_btn_drive = r;
 
   /* 5. Active parameter popup selector next to the left parameter column */
   render_live_popup(renderer, ui, win_w, win_h);
@@ -1275,6 +2082,9 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
 
   switch (key_event->keysym.sym) {
   case SDLK_ESCAPE:
+    if (live_ui_cancel_active_drive(ui, camera)) {
+      return true;
+    }
     if (ui->active_popup != LIVE_POPUP_NONE) {
       ui->active_popup = LIVE_POPUP_NONE;
       return true;
@@ -1282,6 +2092,7 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
     return false;
 
   case SDLK_p:
+    live_ui_cancel_active_drive(ui, camera);
     ui->active_popup = LIVE_POPUP_NONE;
     if (playback_mgr && renderer) {
       playback_manager_enter_playback(playback_mgr, renderer, NULL);
@@ -1351,13 +2162,26 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
                              ui->aspect_mask_index + (shift_held ? -1 : 1));
     return true;
 
+  case SDLK_d:
+    live_ui_set_drive_index(
+        ui, camera, ui->drive_mode_index + (shift_held ? -1 : 1));
+    return true;
+
   case SDLK_r:
     live_ui_reset_all(ui, camera);
     return true;
 
   case SDLK_SPACE:
+    if (key_event->repeat != 0) {
+      return true;
+    }
     ui->active_popup = LIVE_POPUP_NONE;
-    live_ui_request_shutter(camera, save_queue);
+    if (DRIVE_PRESETS[ui->drive_mode_index].mode == LIVE_DRIVE_BURST) {
+      ui->burst_held_by_key = true;
+      live_ui_start_burst(ui, camera, save_queue);
+    } else {
+      live_ui_request_shutter(ui, camera, save_queue);
+    }
     return true;
 
   default:
@@ -1365,8 +2189,26 @@ bool live_ui_handle_key(LiveUiController *ui, CameraStream *camera,
   }
 }
 
+bool live_ui_handle_key_up(LiveUiController *ui, CameraStream *camera,
+                           const SDL_KeyboardEvent *key_event) {
+  if (!ui || !camera || !key_event) {
+    return false;
+  }
+  if (key_event->keysym.sym == SDLK_SPACE) {
+    if (ui->burst_held_by_key) {
+      ui->burst_held_by_key = false;
+      if (!ui->burst_held_by_pointer) {
+        live_ui_stop_burst(ui, camera);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 void live_ui_handle_pointer_down(LiveUiController *ui, CameraStream *camera,
-                                 int x, int y, uint8_t button) {
+                                 AsyncSaveQueue *save_queue, int x, int y,
+                                 uint8_t button) {
   if (!ui) {
     return;
   }
@@ -1376,6 +2218,12 @@ void live_ui_handle_pointer_down(LiveUiController *ui, CameraStream *camera,
     ui->pointer_down = true;
     ui->down_x = x;
     ui->down_y = y;
+    if (camera &&
+        DRIVE_PRESETS[ui->drive_mode_index].mode == LIVE_DRIVE_BURST &&
+        ui_rect_contains(&ui->btn_shutter, x, y)) {
+      ui->burst_held_by_pointer = true;
+      live_ui_start_burst(ui, camera, save_queue);
+    }
   } else if (button == SDL_BUTTON_RIGHT && camera) {
     /* Right click steps backward on hovered Live HUD button */
     handle_live_wheel_or_step(ui, camera, -1, x, y);
@@ -1404,13 +2252,28 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
   ui->pointer_y = y;
   ui->pointer_down = false;
 
+  if (ui->burst_held_by_pointer) {
+    ui->burst_held_by_pointer = false;
+    if (!ui->burst_held_by_key) {
+      live_ui_stop_burst(ui, camera);
+    }
+    return;
+  }
+
   /* Top-left Settings toggle button is always interactive */
   if (ui_rect_contains(&ui->top_btn_settings, x, y) &&
       ui_rect_contains(&ui->top_btn_settings, sx, sy)) {
     ui->settings_visible = !ui->settings_visible;
-    if (!ui->settings_visible) {
+    if (!ui->settings_visible && ui->active_popup != LIVE_POPUP_DRIVE) {
       ui->active_popup = LIVE_POPUP_NONE;
     }
+    return;
+  }
+
+  /* Top bar Drive button opens/toggles the Drive Mode popup */
+  if (ui_rect_contains(&ui->top_btn_drive, x, y) &&
+      ui_rect_contains(&ui->top_btn_drive, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_DRIVE);
     return;
   }
 
@@ -1475,6 +2338,55 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
           return;
         }
       }
+    } else if (ui->active_popup == LIVE_POPUP_DRIVE) {
+      for (int i = 0; i < ui->popup_opt_count; ++i) {
+        if (ui_rect_contains(&ui->popup_opt_rects[i], x, y) &&
+            ui_rect_contains(&ui->popup_opt_rects[i], sx, sy)) {
+          live_ui_set_drive_index(ui, camera, i);
+          return;
+        }
+      }
+      LiveDriveMode dmode = DRIVE_PRESETS[ui->drive_mode_index].mode;
+      if (dmode == LIVE_DRIVE_INTERVAL) {
+        if (ui_rect_contains(&ui->popup_btn_minus, x, y) &&
+            ui_rect_contains(&ui->popup_btn_minus, sx, sy)) {
+          live_ui_set_interval_sec_index(ui, ui->interval_sec_index - 1);
+          return;
+        }
+        if (ui_rect_contains(&ui->popup_btn_plus, x, y) &&
+            ui_rect_contains(&ui->popup_btn_plus, sx, sy)) {
+          live_ui_set_interval_sec_index(ui, ui->interval_sec_index + 1);
+          return;
+        }
+        if (ui_rect_contains(&ui->popup_btn_reset, x, y) &&
+            ui_rect_contains(&ui->popup_btn_reset, sx, sy)) {
+          live_ui_set_interval_sec_index(ui, 3); /* Default 5s */
+          return;
+        }
+        if (ui_rect_contains(&ui->popup_sub_minus, x, y) &&
+            ui_rect_contains(&ui->popup_sub_minus, sx, sy)) {
+          live_ui_set_interval_shots_index(ui, ui->interval_shots_index - 1);
+          return;
+        }
+        if (ui_rect_contains(&ui->popup_sub_plus, x, y) &&
+            ui_rect_contains(&ui->popup_sub_plus, sx, sy)) {
+          live_ui_set_interval_shots_index(ui, ui->interval_shots_index + 1);
+          return;
+        }
+        if (ui_rect_contains(&ui->popup_sub_reset, x, y) &&
+            ui_rect_contains(&ui->popup_sub_reset, sx, sy)) {
+          live_ui_set_interval_shots_index(ui, 2); /* Default 30 shots */
+          return;
+        }
+      } else if (dmode == LIVE_DRIVE_AEB) {
+        for (int i = 0; i < ui->popup_sub_count; ++i) {
+          if (ui_rect_contains(&ui->popup_sub_rects[i], x, y) &&
+              ui_rect_contains(&ui->popup_sub_rects[i], sx, sy)) {
+            live_ui_set_aeb_step_index(ui, i);
+            return;
+          }
+        }
+      }
     } else {
       for (int i = 0; i < ui->popup_opt_count; ++i) {
         if (ui_rect_contains(&ui->popup_opt_rects[i], x, y) &&
@@ -1508,6 +2420,7 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
   /* 2. Top bar buttons */
   if (ui_rect_contains(&ui->top_btn_play, x, y) &&
       ui_rect_contains(&ui->top_btn_play, sx, sy)) {
+    live_ui_cancel_active_drive(ui, camera);
     ui->active_popup = LIVE_POPUP_NONE;
     if (playback_mgr && renderer) {
       playback_manager_enter_playback(playback_mgr, renderer, NULL);
@@ -1529,6 +2442,7 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
 
   if (ui_rect_contains(&ui->top_btn_quit, x, y) &&
       ui_rect_contains(&ui->top_btn_quit, sx, sy)) {
+    live_ui_cancel_active_drive(ui, camera);
     ui->quit_requested = true;
     return;
   }
@@ -1537,7 +2451,7 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
   if (ui_rect_contains(&ui->btn_shutter, x, y) &&
       ui_rect_contains(&ui->btn_shutter, sx, sy)) {
     ui->active_popup = LIVE_POPUP_NONE;
-    live_ui_request_shutter(camera, save_queue);
+    live_ui_request_shutter(ui, camera, save_queue);
     return;
   }
 
@@ -1591,6 +2505,11 @@ void live_ui_handle_pointer_up(LiveUiController *ui, CameraStream *camera,
   if (ui_rect_contains(&ui->hud_btn_aspect, x, y) &&
       ui_rect_contains(&ui->hud_btn_aspect, sx, sy)) {
     toggle_popup(ui, LIVE_POPUP_ASPECT);
+    return;
+  }
+  if (ui_rect_contains(&ui->hud_btn_drive, x, y) &&
+      ui_rect_contains(&ui->hud_btn_drive, sx, sy)) {
+    toggle_popup(ui, LIVE_POPUP_DRIVE);
     return;
   }
 

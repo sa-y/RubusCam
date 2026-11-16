@@ -250,6 +250,18 @@ bool camera_stream_is_still_pending(const CameraStream *cam);
 bool camera_stream_poll_captured_still(CameraStream *cam,
                                        CameraCapturedStill *out_still);
 
+/*
+ * Enable or disable continuous burst capture mode (high-speed continuous
+ * shooting while shutter is held).
+ */
+void camera_stream_set_burst_mode(CameraStream *cam, bool active);
+bool camera_stream_is_burst_mode(const CameraStream *cam);
+
+/*
+ * Return the current monotonic preview frame sequence counter.
+ */
+uint64_t camera_stream_get_frame_sequence(const CameraStream *cam);
+
 #ifdef __cplusplus
 }
 #endif

@@ -35,14 +35,16 @@ static void show_mouse_cursor(LiveUiController *live_ui, uint32_t now_ms) {
 
 static void dispatch_pointer_down(LiveUiController *live_ui,
                                   PlaybackManager *playback_mgr,
-                                  CameraStream *camera, SDL_Renderer *renderer,
-                                  int x, int y, uint8_t button) {
+                                  CameraStream *camera,
+                                  AsyncSaveQueue *save_queue,
+                                  SDL_Renderer *renderer, int x, int y,
+                                  uint8_t button) {
   if (playback_manager_get_mode(playback_mgr) != APP_MODE_LIVE) {
     if (button == SDL_BUTTON_LEFT) {
       playback_manager_handle_pointer_down(playback_mgr, renderer, x, y);
     }
   } else {
-    live_ui_handle_pointer_down(live_ui, camera, x, y, button);
+    live_ui_handle_pointer_down(live_ui, camera, save_queue, x, y, button);
   }
 }
 
@@ -92,12 +94,16 @@ static void process_sdl_event(const SDL_Event *event, uint32_t frame_start,
     }
     break;
 
+  case SDL_KEYUP:
+    live_ui_handle_key_up(live_ui, camera, &event->key);
+    break;
+
   case SDL_MOUSEBUTTONDOWN:
     if (event->button.which == SDL_TOUCH_MOUSEID) {
       return; /* Handled via SDL_FINGERDOWN to avoid duplicate events */
     }
     show_mouse_cursor(live_ui, frame_start);
-    dispatch_pointer_down(live_ui, playback_mgr, camera, renderer,
+    dispatch_pointer_down(live_ui, playback_mgr, camera, save_queue, renderer,
                           event->button.x, event->button.y,
                           event->button.button);
     break;
@@ -148,8 +154,8 @@ static void process_sdl_event(const SDL_Event *event, uint32_t frame_start,
     }
     int tx = (int)(event->tfinger.x * (float)cur_win_w);
     int ty = (int)(event->tfinger.y * (float)cur_win_h);
-    dispatch_pointer_down(live_ui, playback_mgr, camera, renderer, tx, ty,
-                          SDL_BUTTON_LEFT);
+    dispatch_pointer_down(live_ui, playback_mgr, camera, save_queue, renderer,
+                          tx, ty, SDL_BUTTON_LEFT);
     break;
   }
 
@@ -198,6 +204,9 @@ int main(int argc, char *argv[]) {
   PlaybackManager playback_mgr;
   memset(&playback_mgr, 0, sizeof(playback_mgr));
   bool playback_inited = false;
+  LiveUiController live_ui;
+  memset(&live_ui, 0, sizeof(live_ui));
+  bool live_ui_inited = false;
 
   SDL_LogPriority log_priority = SDL_LOG_PRIORITY_INFO;
   DcfDirMode dcf_mode = DCF_DIR_MODE_STANDARD;
@@ -356,9 +365,9 @@ int main(int argc, char *argv[]) {
 
   const uint32_t target_frame_time_ms = 1000 / 30; // ~30 FPS
 
-  // Live View UI & Exposure/WB/Metering/Quality controller state
-  LiveUiController live_ui;
+  // Live View UI & Exposure/WB/Metering/Quality/Drive controller state
   live_ui_init(&live_ui);
+  live_ui_inited = true;
 
   // Initialize background async JPEG + Exif save queue
   if (!async_save_queue_init(&save_queue)) {
@@ -395,19 +404,29 @@ int main(int argc, char *argv[]) {
       live_ui.cursor_visible = false;
     }
 
-    // Poll completed asynchronous still capture and dispatch to Quick Review +
-    // background save queue
+    // Update active drive modes (self-timer, burst, interval, AEB)
+    if (playback_manager_get_mode(&playback_mgr) == APP_MODE_LIVE) {
+      live_ui_update(&live_ui, camera, &save_queue);
+    }
+
+    // Poll completed asynchronous still capture(s) and dispatch to Quick Review
+    // + background save queue
     CameraCapturedStill captured_still;
-    if (camera_stream_poll_captured_still(camera, &captured_still)) {
+    while (camera_stream_poll_captured_still(camera, &captured_still)) {
+      bool show_quick_review =
+          live_ui_on_still_captured(&live_ui, camera, &captured_still);
       live_ui_apply_aspect_crop(&live_ui, &captured_still);
       char filepath[512];
       if (dcf_storage_next_filepath(&dcf_storage, filepath, sizeof(filepath))) {
-        // 1. Immediately start Quick Review from in-memory raw buffer (zero
-        // disk wait)
-        playback_manager_start_quick_review(
-            &playback_mgr, renderer, filepath, captured_still.data,
-            captured_still.width, captured_still.height, captured_still.stride,
-            captured_still.is_bgr, &captured_still.exp_status);
+        // 1. Start Quick Review from in-memory raw buffer unless suppressed by
+        // continuous drive mode (Burst, Interval, or intermediate AEB shots)
+        if (show_quick_review) {
+          playback_manager_start_quick_review(
+              &playback_mgr, renderer, filepath, captured_still.data,
+              captured_still.width, captured_still.height,
+              captured_still.stride, captured_still.is_bgr,
+              &captured_still.exp_status);
+        }
 
         // 2. Prepare Exif 2.3 metadata
         ExifMetadata exif;
@@ -496,6 +515,9 @@ cleanup:
   async_save_queue_destroy(&save_queue);
   if (playback_inited) {
     playback_manager_destroy(&playback_mgr);
+  }
+  if (live_ui_inited) {
+    live_ui_destroy(&live_ui);
   }
   free(frame_buffer);
   if (camera) {
